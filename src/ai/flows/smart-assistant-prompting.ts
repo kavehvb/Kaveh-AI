@@ -12,7 +12,7 @@
 import { ai } from '@/ai/ai-instance';
 import { z } from 'genkit';
 
-// Input schema remains the same, modelId determines the provider
+// Input schema updated to include optional apiKey
 const SmartAssistantPromptingInputSchema = z.object({
   modelId: z.string().describe('The ID of the AI model to use (e.g., "googleai/gemini-2.0-flash" or "openrouter/mistralai/mistral-7b-instruct").'),
   prompt: z.string().describe('The prompt to send to the AI model.'),
@@ -22,6 +22,7 @@ const SmartAssistantPromptingInputSchema = z.object({
     .describe(
       "An optional file to send to the AI model, as a data URI that must include a MIME type and use Base64 encoding. Expected format: 'data:<mimetype>;base64,<encoded_data>'. Note: Files are currently only supported for Google AI models."
     ),
+  apiKey: z.string().optional().describe('Optional API key for the provider (e.g., OpenRouter). If not provided, will try environment variables.')
 });
 export type SmartAssistantPromptingInput = z.infer<typeof SmartAssistantPromptingInputSchema>;
 
@@ -52,6 +53,7 @@ const googleAIPrompt = ai.definePrompt({
         .describe(
           "An optional file to send to the AI model, as a data URI. Only used if the model supports multimodal input."
         ),
+      // apiKey is not relevant for the Google AI prompt template itself
     }),
   },
   output: {
@@ -88,16 +90,17 @@ async (input) => {
       }
 
     console.log(`Routing to OpenRouter model: ${input.modelId}`);
-    const apiKey = process.env.OPENROUTER_API_KEY;
+    // Prioritize API key from input, fall back to environment variable
+    const apiKey = input.apiKey || process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
-      throw new Error("OPENROUTER_API_KEY environment variable is not set.");
+      throw new Error("OpenRouter API key is missing. Please set it in the Settings tab or configure the OPENROUTER_API_KEY environment variable.");
     }
 
     try {
       const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${apiKey}`,
+          "Authorization": `Bearer ${apiKey}`, // Use the determined API key
           "Content-Type": "application/json",
           // Optional: Set HTTP Referer or X-Title for analytics
           // "HTTP-Referer": $YOUR_SITE_URL, // Replace with your site URL
@@ -140,6 +143,7 @@ async (input) => {
 
     // Use the specific Google AI prompt defined above
     // Pass only the relevant fields to the googleAIPrompt
+    // Exclude apiKey as it's not needed for the Google prompt template
     const promptInput = {
         prompt: input.prompt,
         ...(input.fileDataUri && { fileDataUri: input.fileDataUri }),

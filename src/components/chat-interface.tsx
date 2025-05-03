@@ -2,20 +2,22 @@
 'use client';
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Send, Paperclip, Mic, Bot, User, DollarSign, BarChart, BrainCircuit, ChevronDown } from 'lucide-react';
+import { Send, Paperclip, Mic, Bot, User, DollarSign, BarChart, BrainCircuit, ChevronDown, Settings, Key, Save, CheckCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { smartAssistantPrompting, SmartAssistantPromptingInput, SmartAssistantPromptingOutput } from '@/ai/flows/smart-assistant-prompting';
-import { fileBasedContentUnderstanding, FileBasedContentUnderstandingInput, FileBasedContentUnderstandingOutput } from '@/ai/flows/file-based-content-understanding';
+// Removed: import { fileBasedContentUnderstanding, FileBasedContentUnderstandingInput, FileBasedContentUnderstandingOutput } from '@/ai/flows/file-based-content-understanding';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { cn } from '@/lib/utils';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableCaption } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input"; // Import Input component
+import { Label } from "@/components/ui/label"; // Import Label component
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -24,6 +26,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 
 
 // --- Pricing Simulation ---
@@ -99,6 +107,9 @@ const calculateCost = (modelId: string, inputLength: number, outputLength: numbe
 };
 
 
+// --- Settings State ---
+const OPENROUTER_API_KEY_STORAGE_KEY = 'openrouter_api_key';
+
 export default function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState<string>('');
@@ -109,11 +120,32 @@ export default function ChatInterface() {
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [totalCost, setTotalCost] = useState<number>(0);
   const [selectedModel, setSelectedModel] = useState<typeof AVAILABLE_MODELS[0]>(AVAILABLE_MODELS[0]); // Default model
+  const [openRouterApiKey, setOpenRouterApiKey] = useState<string>('');
+  const [apiKeySaved, setApiKeySaved] = useState<boolean>(false); // State for save confirmation
 
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const analyseScrollAreaRef = useRef<HTMLDivElement>(null);
+  const settingsScrollAreaRef = useRef<HTMLDivElement>(null); // Ref for settings scroll
+
+  // Load API key from local storage on mount
+  useEffect(() => {
+    const storedApiKey = localStorage.getItem(OPENROUTER_API_KEY_STORAGE_KEY);
+    if (storedApiKey) {
+      setOpenRouterApiKey(storedApiKey);
+      console.log("Loaded OpenRouter API Key from localStorage.");
+    }
+  }, []);
+
+
+  // Save API key to local storage
+  const handleSaveApiKey = () => {
+    localStorage.setItem(OPENROUTER_API_KEY_STORAGE_KEY, openRouterApiKey);
+    setApiKeySaved(true); // Show confirmation
+    console.log("Saved OpenRouter API Key to localStorage.");
+    setTimeout(() => setApiKeySaved(false), 2000); // Hide confirmation after 2 seconds
+  };
 
   // Scroll chat to bottom
   useEffect(() => {
@@ -175,6 +207,12 @@ export default function ChatInterface() {
         return;
      }
 
+     // Check if API key is needed and present for OpenRouter models
+     if (selectedModel.provider === 'openrouter' && !openRouterApiKey && !process.env.NEXT_PUBLIC_OPENROUTER_API_KEY) { // Also check env var if needed
+        setError(`OpenRouter API key is required for model ${selectedModel.name}. Please set it in the Settings tab.`);
+        return;
+     }
+
 
     setError(null);
     const timestamp = Date.now();
@@ -197,7 +235,7 @@ export default function ChatInterface() {
     setIsSending(true);
 
     try {
-      let response: SmartAssistantPromptingOutput; // Use the union type if fileBased... is still needed
+      let response: SmartAssistantPromptingOutput;
       let calculatedCost = 0;
 
       // Use smartAssistantPrompting for both Google and OpenRouter
@@ -205,6 +243,7 @@ export default function ChatInterface() {
         modelId: selectedModel.id,
         prompt: userMessageText,
         ...(userMessageFile && { fileDataUri: userMessageFile.dataUri }), // Pass file URI if present
+        ...(selectedModel.provider === 'openrouter' && { apiKey: openRouterApiKey }), // Pass API key if OpenRouter model
       };
 
       console.log("Sending to smartAssistantPrompting with input:", assistantInput);
@@ -241,7 +280,7 @@ export default function ChatInterface() {
     } finally {
       setIsSending(false);
     }
-  }, [input, selectedFile, fileDataUri, selectedModel]); // Add selectedModel dependency
+  }, [input, selectedFile, fileDataUri, selectedModel, openRouterApiKey]); // Add selectedModel and openRouterApiKey dependency
 
   const handleKeyPress = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey) {
@@ -266,37 +305,38 @@ export default function ChatInterface() {
   return (
     <Card className="w-full max-w-4xl h-[80vh] flex flex-col shadow-lg rounded-lg">
       <Tabs defaultValue="chat" className="flex flex-col h-full">
-        <CardHeader className="border-b flex flex-row justify-between items-center p-4 gap-4">
+        <CardHeader className="border-b flex flex-row justify-between items-center p-4 gap-4 flex-wrap">
           <CardTitle className="text-lg font-semibold text-primary whitespace-nowrap">AI Assistant</CardTitle>
 
-            {/* Model Selector Dropdown */}
-            <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" className="w-full md:w-auto justify-between min-w-[200px]">
-                    <BrainCircuit className="mr-2 h-4 w-4" />
-                    <span className="truncate flex-1 text-left">{selectedModel.name}</span>
-                    <ChevronDown className="ml-2 h-4 w-4 opacity-50" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-[--radix-dropdown-menu-trigger-width]">
-                  <DropdownMenuLabel>Select AI Model</DropdownMenuLabel>
-                  <DropdownMenuSeparator />
-                  {AVAILABLE_MODELS.map((model) => (
-                    <DropdownMenuItem
-                      key={model.id}
-                      onSelect={() => setSelectedModel(model)}
-                      disabled={isSending}
-                    >
-                      {model.name}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
+             {/* Model Selector Dropdown */}
+             <DropdownMenu>
+                 <DropdownMenuTrigger asChild>
+                   <Button variant="outline" className="w-full md:w-auto justify-between min-w-[200px]">
+                     <BrainCircuit className="mr-2 h-4 w-4" />
+                     <span className="truncate flex-1 text-left">{selectedModel.name}</span>
+                     <ChevronDown className="ml-2 h-4 w-4 opacity-50" />
+                   </Button>
+                 </DropdownMenuTrigger>
+                 <DropdownMenuContent align="end" className="w-[--radix-dropdown-menu-trigger-width]">
+                   <DropdownMenuLabel>Select AI Model</DropdownMenuLabel>
+                   <DropdownMenuSeparator />
+                   {AVAILABLE_MODELS.map((model) => (
+                     <DropdownMenuItem
+                       key={model.id}
+                       onSelect={() => setSelectedModel(model)}
+                       disabled={isSending}
+                     >
+                       {model.name}
+                     </DropdownMenuItem>
+                   ))}
+                 </DropdownMenuContent>
+               </DropdownMenu>
 
 
-           <TabsList className="grid grid-cols-2 w-[200px] shrink-0">
+           <TabsList className="grid grid-cols-3 w-full md:w-[300px] shrink-0">
             <TabsTrigger value="chat">Chat</TabsTrigger>
             <TabsTrigger value="analyse">Analyse</TabsTrigger>
+            <TabsTrigger value="settings">Settings</TabsTrigger>
           </TabsList>
         </CardHeader>
 
@@ -405,7 +445,7 @@ export default function ChatInterface() {
                   </Table>
                ) : (
                  <div className="text-center text-muted-foreground py-8">
-                   <BarChart className="mx-auto h-12 w-12 mb-2" />
+                   <BarChart className="mx-auto h-12 w-12 mb-2 opacity-50" />
                    <p>No AI interactions yet. Send some messages to see the cost analysis.</p>
                  </div>
                )}
@@ -413,6 +453,57 @@ export default function ChatInterface() {
             </div>
           </ScrollArea>
         </TabsContent>
+
+        <TabsContent value="settings" className="flex-1 overflow-hidden p-0 m-0 data-[state=inactive]:hidden">
+           <ScrollArea className="h-full p-4" ref={settingsScrollAreaRef}>
+             <div className="space-y-6 max-w-md mx-auto">
+               <h3 className="text-lg font-semibold mb-4 text-primary flex items-center"><Settings className="mr-2 h-5 w-5" /> Settings</h3>
+
+               <div className="space-y-2">
+                 <Label htmlFor="openrouter-api-key" className="flex items-center">
+                    <Key className="mr-2 h-4 w-4" /> OpenRouter API Key
+                 </Label>
+                 <p className="text-sm text-muted-foreground">
+                   Enter your OpenRouter API key to use models like Mistral, Claude, GPT-4o Mini, etc.
+                   Get your key from <a href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer" className="underline text-accent hover:text-accent/80">OpenRouter Keys</a>.
+                   The key will be stored securely in your browser's local storage.
+                 </p>
+                 <div className="flex items-center gap-2">
+                   <Input
+                     id="openrouter-api-key"
+                     type="password" // Use password type to obscure key
+                     placeholder="sk-or-v1-..."
+                     value={openRouterApiKey}
+                     onChange={(e) => setOpenRouterApiKey(e.target.value)}
+                     className="flex-1"
+                   />
+                   <Button onClick={handleSaveApiKey} disabled={!openRouterApiKey.trim()}>
+                      {apiKeySaved ? <CheckCircle className="mr-2 h-4 w-4" /> : <Save className="mr-2 h-4 w-4" />}
+                      {apiKeySaved ? 'Saved!' : 'Save Key'}
+                   </Button>
+                 </div>
+                 {apiKeySaved && <p className="text-sm text-green-600">API Key saved successfully!</p>}
+               </div>
+
+               <Alert>
+                  <AlertTitle>Security Note</AlertTitle>
+                  <AlertDescription>
+                    Your API key is stored only in your browser's local storage and is not sent to our servers (except when making direct calls to OpenRouter on your behalf). Be cautious about sharing your keys.
+                  </AlertDescription>
+               </Alert>
+
+               {/* Placeholder for future settings */}
+               {/*
+               <Separator />
+               <div>
+                 <h4 className="text-md font-semibold mb-2">Other Settings</h4>
+                 <p className="text-sm text-muted-foreground">More settings will be available here in the future.</p>
+               </div>
+               */}
+             </div>
+           </ScrollArea>
+         </TabsContent>
+
 
         <CardFooter className="border-t p-4 flex-col items-start gap-2">
            {error && (
@@ -428,7 +519,7 @@ export default function ChatInterface() {
               className="text-muted-foreground hover:text-accent shrink-0"
               onClick={() => fileInputRef.current?.click()}
               aria-label="Attach file"
-              disabled={isSending} // Consider disabling based on model capabilities too
+              disabled={isSending || selectedModel.provider === 'openrouter'} // Disable if OpenRouter model selected
               title={selectedModel.provider === 'openrouter' ? "File attachment not supported for selected OpenRouter model" : "Attach file"}
             >
               <Paperclip className="h-5 w-5" />
@@ -440,6 +531,7 @@ export default function ChatInterface() {
               className="hidden"
               // Accept common text/image/pdf types, adjust as needed
               accept=".txt,.pdf,.jpg,.jpeg,.png,.webp,.md"
+              disabled={selectedModel.provider === 'openrouter'} // Also disable the input itself
             />
              <Textarea
               placeholder="Type your message or drop a file (if supported by model)..."
@@ -466,10 +558,14 @@ export default function ChatInterface() {
             <Button
               size="icon"
               onClick={handleSend}
-              disabled={isSending || (!input.trim() && !selectedFile) || (selectedFile && selectedModel.provider === 'openrouter')}
+              disabled={isSending || (!input.trim() && !selectedFile) || (selectedFile && selectedModel.provider === 'openrouter') || (selectedModel.provider === 'openrouter' && !openRouterApiKey && !process.env.NEXT_PUBLIC_OPENROUTER_API_KEY)} // Disable send if OpenRouter key missing
                aria-label="Send message"
                className="bg-accent hover:bg-accent/90 text-accent-foreground shrink-0"
-               title={selectedFile && selectedModel.provider === 'openrouter' ? `Cannot send file with ${selectedModel.name}` : "Send message"}
+               title={
+                 selectedFile && selectedModel.provider === 'openrouter' ? `Cannot send file with ${selectedModel.name}`
+                 : (selectedModel.provider === 'openrouter' && !openRouterApiKey && !process.env.NEXT_PUBLIC_OPENROUTER_API_KEY) ? 'OpenRouter API key required (Set in Settings)'
+                 : "Send message"
+                }
             >
               <Send className="h-5 w-5" />
             </Button>
@@ -488,11 +584,3 @@ export default function ChatInterface() {
     </Card>
   );
 }
-
-// Add Tooltip components if not already globally available
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip"
