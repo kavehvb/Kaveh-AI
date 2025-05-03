@@ -1,13 +1,9 @@
 import type {Metadata} from 'next';
-import { Inter } from 'next/font/google'; // Import a standard Google Font
+// Removed Inter font import to resolve build error
 import './globals.css';
 import { Toaster } from "@/components/ui/toaster"; // Import Toaster
 
-// Initialize the Inter font
-const inter = Inter({
-  subsets: ['latin'],
-  variable: '--font-inter', // Use a variable name for the font
-});
+// Removed font initialization
 
 export const metadata: Metadata = {
   title: 'AI-ssistant', // Updated title
@@ -21,8 +17,8 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      {/* Apply the font variable to the body */}
-      <body className={`${inter.variable} font-sans antialiased`}>
+      {/* Removed font variable application from body */}
+      <body className={`antialiased`}>
         {children}
         <Toaster /> {/* Add Toaster component */}
       </body>
