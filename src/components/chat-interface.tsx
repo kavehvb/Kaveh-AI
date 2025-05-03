@@ -11,7 +11,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { smartAssistantPrompting, SmartAssistantPromptingInput, SmartAssistantPromptingOutput } from '@/ai/flows/smart-assistant-prompting';
 // Removed: import { fileBasedContentUnderstanding, FileBasedContentUnderstandingInput, FileBasedContentUnderstandingOutput } from '@/ai/flows/file-based-content-understanding';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
-import { cn } from '@/lib/utils';
+import { cn, isPersian } from '@/lib/utils'; // Import isPersian utility
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableCaption } from "@/components/ui/table";
@@ -366,7 +366,7 @@ export default function ChatInterface() {
                   )}
                 >
                   {message.sender === 'ai' && (
-                    <Avatar className="h-8 w-8 border">
+                    <Avatar className="h-8 w-8 border shrink-0">
                       <AvatarFallback><Bot size={16} /></AvatarFallback>
                     </Avatar>
                   )}
@@ -374,16 +374,21 @@ export default function ChatInterface() {
                     className={cn(
                       'max-w-[75%] rounded-lg p-3 shadow-sm relative group', // Added relative and group
                       message.sender === 'user'
-                        ? 'bg-primary text-primary-foreground'
-                        : message.isError ? 'bg-destructive/10 border border-destructive/30 text-destructive' : 'bg-secondary text-secondary-foreground' // Conditional error styling
+                        ? 'bg-primary text-primary-foreground ltr-text' // User messages are always LTR for input consistency
+                        : message.isError
+                          ? 'bg-destructive/10 border border-destructive/30 text-destructive ltr-text' // Errors are LTR
+                          : 'bg-secondary text-secondary-foreground', // AI messages base style
+                         // Apply RTL/LTR based on content detection for AI messages
+                       message.sender === 'ai' && !message.isError && (isPersian(message.text) ? 'rtl-text' : 'ltr-text')
                     )}
                   >
                     {message.file && (
-                      <div className="mb-2 p-2 border rounded-md bg-muted/50 flex items-center gap-2 text-sm">
+                      <div className="mb-2 p-2 border rounded-md bg-muted/50 flex items-center gap-2 text-sm ltr-text"> {/* File info always LTR */}
                         <Paperclip size={14} />
                         <span>{message.file.name}</span>
                       </div>
                     )}
+                    {/* Apply whitespace-pre-wrap to preserve line breaks */}
                     <p className="text-sm whitespace-pre-wrap">{message.text}</p>
                      {/* Show cost tooltip on hover for AI messages (only non-errors) */}
                     {message.sender === 'ai' && !message.isError && message.cost !== undefined && (
@@ -406,7 +411,7 @@ export default function ChatInterface() {
                     )}
                   </div>
                    {message.sender === 'user' && (
-                    <Avatar className="h-8 w-8 border">
+                    <Avatar className="h-8 w-8 border shrink-0">
                        <AvatarFallback><User size={16} /></AvatarFallback>
                     </Avatar>
                   )}
@@ -414,7 +419,7 @@ export default function ChatInterface() {
               ))}
                {isSending && (
                    <div className="flex items-start gap-3 justify-start">
-                      <Avatar className="h-8 w-8 border">
+                      <Avatar className="h-8 w-8 border shrink-0">
                         <AvatarFallback><Bot size={16} /></AvatarFallback>
                       </Avatar>
                       <div className="max-w-[75%] rounded-lg p-3 shadow-sm bg-secondary text-secondary-foreground space-y-2">
@@ -556,6 +561,7 @@ export default function ChatInterface() {
               className="flex-1 resize-none min-h-[40px] max-h-[150px] text-sm"
               rows={1}
               disabled={isSending}
+              dir={isPersian(input) ? 'rtl' : 'ltr'} // Set direction based on input
             />
             <Button
               variant="ghost"
@@ -586,7 +592,7 @@ export default function ChatInterface() {
             </Button>
           </div>
            {selectedFile && (
-              <div className="mt-2 text-sm text-muted-foreground flex items-center gap-2 w-full">
+              <div className="mt-2 text-sm text-muted-foreground flex items-center gap-2 w-full ltr-text"> {/* File info always LTR */}
                 <Paperclip size={14} />
                 <span className="truncate max-w-[calc(100%-80px)]">{selectedFile.name}</span>
                 <Button variant="ghost" size="sm" onClick={() => {setSelectedFile(null); setFileDataUri(undefined); setError(null); if(fileInputRef.current) fileInputRef.current.value = '';}} className="p-1 h-auto text-destructive hover:text-destructive/80 ml-auto">
@@ -599,3 +605,4 @@ export default function ChatInterface() {
     </Card>
   );
 }
+

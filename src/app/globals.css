@@ -3,7 +3,8 @@
 @tailwind utilities;
 
 body {
-  font-family: Arial, Helvetica, sans-serif;
+  /* Added Vazirmatn and Tahoma for better Persian/Arabic support */
+  font-family: Vazirmatn, Tahoma, Arial, Helvetica, sans-serif;
 }
 
 @layer base {
@@ -86,5 +87,19 @@ body {
   body {
     @apply bg-background text-foreground;
     font-feature-settings: "rlig" 1, "calt" 1;
+  }
+}
+
+/* Add styles for RTL text */
+@layer utilities {
+  .rtl-text {
+    direction: rtl;
+    text-align: right;
+    unicode-bidi: isolate; /* Helps with mixed directionality */
+  }
+  .ltr-text {
+    direction: ltr;
+    text-align: left;
+    unicode-bidi: isolate;
   }
 }
