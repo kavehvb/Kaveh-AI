@@ -2,14 +2,13 @@
 'use client';
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Send, Paperclip, Mic, Bot, User, DollarSign, BarChart, BrainCircuit, ChevronDown, Settings, Key, Save, CheckCircle } from 'lucide-react';
+import { Send, Paperclip, Mic, Bot, User, DollarSign, BarChart, BrainCircuit, ChevronDown, Settings, Key, Save, CheckCircle, RefreshCw, Download, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { smartAssistantPrompting, SmartAssistantPromptingInput, SmartAssistantPromptingOutput } from '@/ai/flows/smart-assistant-prompting';
-// Removed: import { fileBasedContentUnderstanding, FileBasedContentUnderstandingInput, FileBasedContentUnderstandingOutput } from '@/ai/flows/file-based-content-understanding';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { cn, isPersian } from '@/lib/utils'; // Import isPersian utility
 import { Skeleton } from '@/components/ui/skeleton';
@@ -18,6 +17,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableCap
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input"; // Import Input component
 import { Label } from "@/components/ui/label"; // Import Label component
+import { Checkbox } from "@/components/ui/checkbox"; // Import Checkbox component
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -32,26 +32,14 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { useToast } from "@/hooks/use-toast"; // Import useToast
 
 
-// --- Pricing Simulation ---
-// These are VERY ROUGH ESTIMATES and placeholders.
-// Actual costs depend heavily on the specific model (OpenRouter has varied pricing).
-// These need to be replaced with a more sophisticated pricing lookup based on the selected model.
-const COST_PER_INPUT_CHAR_DEFAULT = 0.000005; // Example cost for a default/cheap model
-const COST_PER_OUTPUT_CHAR_DEFAULT = 0.000015; // Example cost for a default/cheap model
-const COST_PER_FILE_ANALYSIS_GOOGLE = 0.01; // Example flat cost for Google AI file analysis
-
-// --- Available Models ---
-// Add more models as needed. Ensure the ID matches the expected format.
-const AVAILABLE_MODELS = [
+// --- Default Models ---
+// Always include these Google models
+const DEFAULT_GOOGLE_MODELS = [
   { id: 'googleai/gemini-2.0-flash', name: 'Google Gemini 2.0 Flash', provider: 'google' },
-  { id: 'openrouter/mistralai/mistral-7b-instruct', name: 'Mistral 7B Instruct (OpenRouter)', provider: 'openrouter'},
-  { id: 'openrouter/google/gemini-flash-1.5', name: 'Gemini Flash 1.5 (OpenRouter)', provider: 'openrouter'},
-  { id: 'openrouter/anthropic/claude-3-haiku', name: 'Claude 3 Haiku (OpenRouter)', provider: 'openrouter'},
-  { id: 'openrouter/openai/gpt-4o-mini', name: 'GPT-4o Mini (OpenRouter)', provider: 'openrouter'},
-  // Add other Google AI models if configured in ai-instance.ts
-  // Add other OpenRouter models: https://openrouter.ai/docs#models
+  // Add other default Google models here if needed
 ];
 
 interface Message {
@@ -65,6 +53,50 @@ interface Message {
   isError?: boolean; // Flag for error messages
 }
 
+interface AIModelInfo {
+    id: string;
+    name: string;
+    provider: 'google' | 'openrouter';
+    // Add other relevant fields from OpenRouter response if needed, e.g., context_length
+    context_length?: number;
+}
+
+// OpenRouter model data structure from API
+interface OpenRouterApiModel {
+    id: string;
+    name: string;
+    description: string;
+    pricing: {
+        prompt: string;
+        completion: string;
+        request: string;
+        image: string;
+    };
+    context_length: number;
+    architecture: {
+        modality: string;
+        tokenizer: string;
+        instruct_type: string | null;
+    };
+    top_provider: {
+        max_completion_tokens: number | null;
+        is_moderated: boolean;
+    };
+    per_request_limits: {
+        prompt_tokens: string;
+        completion_tokens: string;
+    } | null;
+}
+
+
+// --- Pricing Simulation ---
+// These are VERY ROUGH ESTIMATES and placeholders.
+// Actual costs depend heavily on the specific model (OpenRouter has varied pricing).
+// These need to be replaced with a more sophisticated pricing lookup based on the selected model.
+const COST_PER_INPUT_CHAR_DEFAULT = 0.000005; // Example cost for a default/cheap model
+const COST_PER_OUTPUT_CHAR_DEFAULT = 0.000015; // Example cost for a default/cheap model
+const COST_PER_FILE_ANALYSIS_GOOGLE = 0.01; // Example flat cost for Google AI file analysis
+
 // Helper function to format currency
 const formatCurrency = (amount: number | undefined): string => {
   if (amount === undefined || amount === null) return 'N/A';
@@ -75,31 +107,35 @@ const formatCurrency = (amount: number | undefined): string => {
 };
 
 // Placeholder function for more accurate cost calculation based on model
+// TODO: Enhance this to use actual pricing data if fetched from OpenRouter
 const calculateCost = (modelId: string, inputLength: number, outputLength: number, hasFile: boolean): number => {
-  // TODO: Implement actual cost lookup based on modelId
   console.log(`Calculating cost for model: ${modelId}, input: ${inputLength}, output: ${outputLength}, file: ${hasFile}`);
 
   let inputCostPerChar = COST_PER_INPUT_CHAR_DEFAULT;
   let outputCostPerChar = COST_PER_OUTPUT_CHAR_DEFAULT;
   let fileCost = 0;
 
-  const modelInfo = AVAILABLE_MODELS.find(m => m.id === modelId);
-
   // Example: Assign different placeholder costs based on provider/model name substring
-  if (modelId.includes('gpt-4') || modelId.includes('claude')) { // More expensive models
-      inputCostPerChar = 0.000010;
-      outputCostPerChar = 0.000030;
-  } else if (modelId.startsWith('googleai/')) {
-      inputCostPerChar = 0.000003;
-      outputCostPerChar = 0.000008;
-  } // Keep default for others like Mistral 7B for now
+   if (modelId.includes('gpt-4') || modelId.includes('claude-3-opus') || modelId.includes('gemini-1.5-pro')) { // More expensive models
+       inputCostPerChar = 0.000015; // ~ $15 / 1M input chars
+       outputCostPerChar = 0.000045; // ~ $45 / 1M output chars
+   } else if (modelId.includes('claude-3-sonnet') || modelId.includes('gpt-4o') || modelId.includes('gemini-1.5-flash')) { // Mid-tier
+      inputCostPerChar = 0.000005; // ~ $5 / 1M input chars
+      outputCostPerChar = 0.000015; // ~ $15 / 1M output chars
+   } else if (modelId.startsWith('googleai/gemini-2.0-flash')) { // Google default cheap
+      inputCostPerChar = 0.000001; // Very cheap placeholders
+      outputCostPerChar = 0.000002;
+  } else if (modelId.startsWith('openrouter/')) { // General OpenRouter (like Mistral, Haiku, etc.) - Default cheap
+      inputCostPerChar = 0.000002; // ~ $2 / 1M input chars
+      outputCostPerChar = 0.000006; // ~ $6 / 1M output chars
+  }
 
 
-  if (hasFile && modelInfo?.provider === 'google') {
+  if (hasFile && modelId.startsWith('googleai/')) {
       fileCost = COST_PER_FILE_ANALYSIS_GOOGLE;
-  } else if (hasFile && modelInfo?.provider === 'openrouter') {
-      // OpenRouter multimodal cost varies; add a placeholder or look up specific model
-      fileCost = 0.005; // Placeholder cost for file processing via OpenRouter (if supported by model)
+  } else if (hasFile && modelId.startsWith('openrouter/')) {
+      // File cost for OpenRouter depends heavily on the underlying model & provider
+      fileCost = 0.005; // Placeholder cost
       console.warn(`File cost calculation for OpenRouter model ${modelId} is a placeholder.`);
   }
 
@@ -110,8 +146,10 @@ const calculateCost = (modelId: string, inputLength: number, outputLength: numbe
 
 // --- Settings State ---
 const OPENROUTER_API_KEY_STORAGE_KEY = 'openrouter_api_key';
+const SELECTED_OPENROUTER_MODELS_KEY = 'selected_openrouter_models';
 
 export default function ChatInterface() {
+  const { toast } = useToast(); // Initialize toast hook
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState<string>('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -120,33 +158,150 @@ export default function ChatInterface() {
   const [error, setError] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [totalCost, setTotalCost] = useState<number>(0);
-  const [selectedModel, setSelectedModel] = useState<typeof AVAILABLE_MODELS[0]>(AVAILABLE_MODELS[0]); // Default model
   const [openRouterApiKey, setOpenRouterApiKey] = useState<string>('');
-  const [apiKeySaved, setApiKeySaved] = useState<boolean>(false); // State for save confirmation
+  const [apiKeySaved, setApiKeySaved] = useState<boolean>(false);
+
+  // --- New State for Dynamic Models ---
+  const [allOpenRouterModels, setAllOpenRouterModels] = useState<OpenRouterApiModel[]>([]); // All models fetched from OpenRouter
+  const [selectedOpenRouterModelIds, setSelectedOpenRouterModelIds] = useState<Set<string>>(new Set()); // IDs of models selected by user in settings
+  const [activeModels, setActiveModels] = useState<AIModelInfo[]>(DEFAULT_GOOGLE_MODELS); // Models available in the chat dropdown
+  const [selectedModel, setSelectedModel] = useState<AIModelInfo>(DEFAULT_GOOGLE_MODELS[0]); // The currently selected model in chat
+  const [isFetchingModels, setIsFetchingModels] = useState<boolean>(false);
+  const [fetchModelsError, setFetchModelsError] = useState<string | null>(null);
+  const [filterTerm, setFilterTerm] = useState<string>(""); // For filtering models in settings
 
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const analyseScrollAreaRef = useRef<HTMLDivElement>(null);
-  const settingsScrollAreaRef = useRef<HTMLDivElement>(null); // Ref for settings scroll
+  const settingsScrollAreaRef = useRef<HTMLDivElement>(null);
 
-  // Load API key from local storage on mount
+  // --- Utility Functions ---
+  const getModelName = (modelId: string | undefined): string => {
+      if (!modelId) return 'Unknown Model';
+      // Find in activeModels first, then fallback to allOpenRouterModels (less efficient but a fallback)
+      const model = activeModels.find(m => m.id === modelId) || allOpenRouterModels.find(m => m.id === modelId);
+      return model?.name || modelId; // Return name or ID if not found
+  }
+
+  const updateActiveModels = useCallback((selectedIds: Set<string>, allFetchedModels: OpenRouterApiModel[]) => {
+      const selectedOpenRouterModels = allFetchedModels
+        .filter(model => selectedIds.has(model.id))
+        .map(model => ({
+          id: model.id, // OpenRouter IDs often don't need the prefix like Google AI does for Genkit routing, the flow handles it
+          name: model.name,
+          provider: 'openrouter' as const, // Explicitly type as 'openrouter'
+          context_length: model.context_length,
+        }));
+
+      const newActiveModels = [...DEFAULT_GOOGLE_MODELS, ...selectedOpenRouterModels];
+      setActiveModels(newActiveModels);
+
+      // Ensure the currently selected model is still valid, otherwise reset to default
+      if (!newActiveModels.some(m => m.id === selectedModel.id)) {
+        setSelectedModel(DEFAULT_GOOGLE_MODELS[0]);
+      }
+       console.log("Updated active models:", newActiveModels);
+
+  }, [selectedModel.id]); // Add selectedModel.id dependency
+
+
+    // --- Fetch OpenRouter Models ---
+    const fetchOpenRouterModels = useCallback(async (apiKey: string) => {
+        if (!apiKey) {
+            setAllOpenRouterModels([]);
+            setFetchModelsError("API Key is required to fetch models.");
+            return;
+        }
+        setIsFetchingModels(true);
+        setFetchModelsError(null);
+        console.log("Fetching OpenRouter models...");
+        try {
+            const response = await fetch("https://openrouter.ai/api/v1/models", {
+                headers: {
+                    "Authorization": `Bearer ${apiKey}`,
+                }
+            });
+            if (!response.ok) {
+                let errorBody = await response.text();
+                let errorMessage = `Failed to fetch models: ${response.status}`;
+                 try {
+                    const errorJson = JSON.parse(errorBody);
+                    errorMessage = errorJson?.error?.message || JSON.stringify(errorJson) || errorBody;
+                 } catch (e) { /* Ignore parse error, use text */ }
+                throw new Error(errorMessage);
+            }
+            const data = await response.json();
+            // OpenRouter API nests models under a 'data' key
+            if (!data || !Array.isArray(data.data)) {
+                 console.error("Unexpected OpenRouter models response structure:", data);
+                 throw new Error("Invalid data structure received for models.");
+             }
+            console.log(`Fetched ${data.data.length} OpenRouter models.`);
+
+            // Filter out models that might not be suitable for chat completions if needed (optional)
+             // const chatModels = data.data.filter((model: OpenRouterApiModel) => model.architecture?.modality === 'text'); // Example filter
+             const chatModels: OpenRouterApiModel[] = data.data; // Keep all for now
+
+            setAllOpenRouterModels(chatModels);
+            // Update active models based on newly fetched list and currently selected IDs
+            updateActiveModels(selectedOpenRouterModelIds, chatModels);
+
+        } catch (error) {
+            console.error("Error fetching OpenRouter models:", error);
+            const message = error instanceof Error ? error.message : "An unknown error occurred";
+            setFetchModelsError(`Error fetching models: ${message}. Check your API key and network connection.`);
+            setAllOpenRouterModels([]); // Clear models on error
+        } finally {
+            setIsFetchingModels(false);
+        }
+    }, [updateActiveModels, selectedOpenRouterModelIds]); // Include selectedOpenRouterModelIds
+
+
+  // --- Effects ---
+
+  // Load API key and selected models from local storage on mount
   useEffect(() => {
     const storedApiKey = localStorage.getItem(OPENROUTER_API_KEY_STORAGE_KEY);
+    const storedSelectedModelIds = localStorage.getItem(SELECTED_OPENROUTER_MODELS_KEY);
+
     if (storedApiKey) {
       setOpenRouterApiKey(storedApiKey);
       console.log("Loaded OpenRouter API Key from localStorage.");
+      // Fetch models immediately if API key is loaded
+       fetchOpenRouterModels(storedApiKey);
     }
-  }, []);
+
+    if (storedSelectedModelIds) {
+      try {
+        const parsedIds = JSON.parse(storedSelectedModelIds);
+        if (Array.isArray(parsedIds)) {
+            const idSet = new Set<string>(parsedIds);
+          setSelectedOpenRouterModelIds(idSet);
+          console.log("Loaded selected OpenRouter Model IDs from localStorage:", idSet);
+          // Update active models (will happen again after fetch if API key exists)
+           updateActiveModels(idSet, allOpenRouterModels); // Update with potentially empty `allOpenRouterModels` initially
+        } else {
+             console.warn("Invalid format for stored selected model IDs in localStorage.");
+             localStorage.removeItem(SELECTED_OPENROUTER_MODELS_KEY); // Clear invalid data
+         }
+      } catch (e) {
+        console.error("Error parsing selected model IDs from localStorage:", e);
+        localStorage.removeItem(SELECTED_OPENROUTER_MODELS_KEY); // Clear corrupted data
+      }
+    } else {
+         // If no models are stored, initialize active models with defaults
+         updateActiveModels(new Set(), []); // Initialize with default google models
+     }
+
+     // Initial update in case only default models are used (no stored key/models)
+     // This ensures the default model is set correctly on first load without stored data
+     if (!storedApiKey && !storedSelectedModelIds) {
+       updateActiveModels(new Set(), []);
+     }
+  }, [fetchOpenRouterModels, updateActiveModels]); // Run only once on mount
 
 
-  // Save API key to local storage
-  const handleSaveApiKey = () => {
-    localStorage.setItem(OPENROUTER_API_KEY_STORAGE_KEY, openRouterApiKey);
-    setApiKeySaved(true); // Show confirmation
-    console.log("Saved OpenRouter API Key to localStorage.");
-    setTimeout(() => setApiKeySaved(false), 2000); // Hide confirmation after 2 seconds
-  };
 
   // Scroll chat to bottom
   useEffect(() => {
@@ -158,35 +313,90 @@ export default function ChatInterface() {
     }
   }, [messages]);
 
+  // --- Event Handlers ---
+
+  const handleSaveApiKey = () => {
+    localStorage.setItem(OPENROUTER_API_KEY_STORAGE_KEY, openRouterApiKey);
+    setApiKeySaved(true);
+    console.log("Saved OpenRouter API Key to localStorage.");
+    toast({ title: "API Key Saved", description: "OpenRouter API key has been saved." });
+    // Trigger model fetch immediately after saving a new key
+     fetchOpenRouterModels(openRouterApiKey);
+    setTimeout(() => setApiKeySaved(false), 2000);
+  };
+
+  const handleRefreshModels = () => {
+      if (!openRouterApiKey) {
+         toast({ variant: "destructive", title: "API Key Missing", description: "Please enter and save your OpenRouter API key first." });
+         return;
+      }
+      fetchOpenRouterModels(openRouterApiKey);
+   };
+
+  const handleModelSelectionChange = (modelId: string, checked: boolean | 'indeterminate') => {
+       // Ensure checked is boolean
+      if (typeof checked === 'boolean') {
+         setSelectedOpenRouterModelIds(prev => {
+             const newSet = new Set(prev);
+             if (checked) {
+                 newSet.add(modelId);
+             } else {
+                 newSet.delete(modelId);
+             }
+             return newSet;
+         });
+      }
+   };
+
+   const handleSelectAllFilteredModels = () => {
+     setSelectedOpenRouterModelIds(prev => {
+       const newSet = new Set(prev);
+       filteredModels.forEach(model => newSet.add(model.id));
+       return newSet;
+     });
+   };
+
+   const handleDeselectAllFilteredModels = () => {
+      setSelectedOpenRouterModelIds(prev => {
+          const newSet = new Set(prev);
+          filteredModels.forEach(model => newSet.delete(model.id));
+          return newSet;
+      });
+    };
+
+  const handleImportSelectedModels = () => {
+      const selectedIdsArray = Array.from(selectedOpenRouterModelIds);
+      localStorage.setItem(SELECTED_OPENROUTER_MODELS_KEY, JSON.stringify(selectedIdsArray));
+      updateActiveModels(selectedOpenRouterModelIds, allOpenRouterModels);
+      console.log("Imported selected models:", selectedOpenRouterModelIds);
+      toast({ title: "Models Imported", description: `${selectedOpenRouterModelIds.size} OpenRouter models added to the chat list.` });
+   };
+
+
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) {
-      // Basic check for potentially large files (e.g., > 10MB)
       if (file.size > 10 * 1024 * 1024) {
         setError("File size exceeds 10MB limit. Please select a smaller file.");
          if (fileInputRef.current) {
-            fileInputRef.current.value = ''; // Reset file input
+            fileInputRef.current.value = '';
          }
         return;
       }
 
-      // Check if the selected model supports file input
-      // Note: This is a simplification. Actual support depends on the specific model's capabilities.
-      // Currently, we assume only Google AI models *might* support files via the flows.
       if (selectedModel.provider === 'openrouter') {
          setError(`File input is not currently supported with the selected OpenRouter model (${selectedModel.name}). Please select a Google AI model or send text only.`);
          if (fileInputRef.current) {
-            fileInputRef.current.value = ''; // Reset file input
+            fileInputRef.current.value = '';
          }
-         return; // Prevent setting the file
+         return;
       }
-
 
       setSelectedFile(file);
       const reader = new FileReader();
       reader.onloadend = () => {
         setFileDataUri(reader.result as string);
-        setError(null); // Clear previous errors on successful load
+        setError(null);
       };
       reader.onerror = (err) => {
         console.error("Error reading file:", err);
@@ -196,7 +406,6 @@ export default function ChatInterface() {
       }
       reader.readAsDataURL(file);
     }
-     // Always reset the input value so the same file can be selected again
      if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
@@ -209,17 +418,16 @@ export default function ChatInterface() {
         return;
      }
 
-     // Check if API key is needed and present for OpenRouter models
-     // Use NEXT_PUBLIC_ prefix if accessing env vars client-side, otherwise they are server-side only
      if (selectedModel.provider === 'openrouter' && !openRouterApiKey && !process.env.NEXT_PUBLIC_OPENROUTER_API_KEY) {
         setError(`OpenRouter API key is required for model ${selectedModel.name}. Please set it in the Settings tab.`);
+        toast({ variant: "destructive", title: "API Key Missing", description: "Set your OpenRouter API key in Settings to use this model." });
         return;
      }
 
 
     setError(null);
     const timestamp = Date.now();
-    const userMessageText = input; // Store input before clearing
+    const userMessageText = input;
     const userMessageFile = selectedFile ? { name: selectedFile.name, dataUri: fileDataUri! } : undefined;
 
     const userMessage: Message = {
@@ -231,7 +439,6 @@ export default function ChatInterface() {
     };
     setMessages((prev) => [...prev, userMessage]);
 
-    // Clear inputs *after* capturing their state
     setInput('');
     setSelectedFile(null);
     setFileDataUri(undefined);
@@ -241,21 +448,17 @@ export default function ChatInterface() {
       let response: SmartAssistantPromptingOutput;
       let calculatedCost = 0;
 
-      // Use smartAssistantPrompting for both Google and OpenRouter
       const assistantInput: SmartAssistantPromptingInput = {
         modelId: selectedModel.id,
         prompt: userMessageText,
-        ...(userMessageFile && { fileDataUri: userMessageFile.dataUri }), // Pass file URI if present
-        // Pass the API key directly from state if it's an OpenRouter model
-        ...(selectedModel.provider === 'openrouter' && { apiKey: openRouterApiKey }),
+        ...(userMessageFile && { fileDataUri: userMessageFile.dataUri }),
+        ...(selectedModel.provider === 'openrouter' && { apiKey: openRouterApiKey || process.env.NEXT_PUBLIC_OPENROUTER_API_KEY }), // Pass key from state or env
       };
 
       console.log("Sending to smartAssistantPrompting with input:", assistantInput);
       response = await smartAssistantPrompting(assistantInput);
       console.log("Received response from smartAssistantPrompting:", response);
 
-
-      // Calculate cost after getting response length
        calculatedCost = calculateCost(
         selectedModel.id,
         userMessageText.length,
@@ -263,38 +466,36 @@ export default function ChatInterface() {
         !!userMessageFile
       );
 
-
       const aiMessage: Message = {
-        id: Date.now() + 1, // Ensure unique ID
+        id: Date.now() + 1,
         sender: 'ai',
         text: response.response,
         cost: calculatedCost,
         timestamp: Date.now(),
-        modelId: selectedModel.id, // Store the model used
+        modelId: selectedModel.id,
       };
       setMessages((prev) => [...prev, aiMessage]);
       setTotalCost((prevTotal) => prevTotal + calculatedCost);
 
     } catch (err) {
       console.error("Error calling AI:", err);
-      // Extract a more specific error message if available
       const errorMessage = err instanceof Error ? err.message : "An unknown error occurred while processing your request.";
-      setError(`Failed to get response: ${errorMessage}`); // Update the general error state for the footer alert
+      setError(`Failed to get response: ${errorMessage}`);
       const errorTimestamp = Date.now();
-       // Add a specific error message bubble to the chat history
        setMessages((prev) => [...prev, {
            id: errorTimestamp + 1,
            sender: 'ai',
-           text: `Error: Could not process the request. ${errorMessage}`, // Display the detailed error message
+           text: `Error: Could not process the request. ${errorMessage}`,
            cost: 0,
            timestamp: errorTimestamp,
            modelId: selectedModel.id,
-           isError: true // Mark this message as an error
+           isError: true
         }]);
+       toast({ variant: "destructive", title: "AI Error", description: errorMessage });
     } finally {
       setIsSending(false);
     }
-  }, [input, selectedFile, fileDataUri, selectedModel, openRouterApiKey]); // Add selectedModel and openRouterApiKey dependency
+  }, [input, selectedFile, fileDataUri, selectedModel, openRouterApiKey, toast]); // Added toast dependency
 
   const handleKeyPress = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey) {
@@ -309,11 +510,20 @@ export default function ChatInterface() {
     setTimeout(() => setError(null), 3000);
   };
 
-  const aiMessages = messages.filter(m => m.sender === 'ai' && !m.isError); // Exclude error messages from analysis
-  const getModelName = (modelId: string | undefined) => {
-      if (!modelId) return 'Unknown Model';
-      return AVAILABLE_MODELS.find(m => m.id === modelId)?.name || modelId;
-  }
+  // --- Memoized Values ---
+  const aiMessages = messages.filter(m => m.sender === 'ai' && !m.isError);
+
+  // Filter models based on the search term in settings
+  const filteredModels = React.useMemo(() => {
+      if (!filterTerm) {
+          return allOpenRouterModels;
+      }
+      const lowerCaseFilter = filterTerm.toLowerCase();
+      return allOpenRouterModels.filter(model =>
+          model.name.toLowerCase().includes(lowerCaseFilter) ||
+          model.id.toLowerCase().includes(lowerCaseFilter)
+      );
+  }, [allOpenRouterModels, filterTerm]);
 
 
   return (
@@ -322,27 +532,37 @@ export default function ChatInterface() {
         <CardHeader className="border-b flex flex-row justify-between items-center p-4 gap-4 flex-wrap">
           <CardTitle className="text-lg font-semibold text-primary whitespace-nowrap">AI Assistant</CardTitle>
 
-             {/* Model Selector Dropdown */}
+             {/* Model Selector Dropdown - Uses `activeModels` state */}
              <DropdownMenu>
                  <DropdownMenuTrigger asChild>
                    <Button variant="outline" className="w-full md:w-auto justify-between min-w-[200px]">
                      <BrainCircuit className="mr-2 h-4 w-4" />
-                     <span className="truncate flex-1 text-left">{selectedModel.name}</span>
+                     {/* Display selected model name or loading/default text */}
+                      <span className="truncate flex-1 text-left">
+                        {activeModels.length > 0 ? (selectedModel?.name ?? "Select Model") : "Loading Models..."}
+                       </span>
                      <ChevronDown className="ml-2 h-4 w-4 opacity-50" />
                    </Button>
                  </DropdownMenuTrigger>
-                 <DropdownMenuContent align="end" className="w-[--radix-dropdown-menu-trigger-width]">
+                 <DropdownMenuContent align="end" className="w-[--radix-dropdown-menu-trigger-width] max-h-80 overflow-y-auto">
                    <DropdownMenuLabel>Select AI Model</DropdownMenuLabel>
                    <DropdownMenuSeparator />
-                   {AVAILABLE_MODELS.map((model) => (
-                     <DropdownMenuItem
-                       key={model.id}
-                       onSelect={() => setSelectedModel(model)}
-                       disabled={isSending}
-                     >
-                       {model.name}
-                     </DropdownMenuItem>
-                   ))}
+                    {activeModels.length > 0 ? (
+                     activeModels.map((model) => (
+                       <DropdownMenuItem
+                         key={model.id}
+                         onSelect={() => setSelectedModel(model)}
+                         disabled={isSending}
+                         className={cn(selectedModel?.id === model.id && "bg-accent/50")} // Highlight selected
+                       >
+                         {model.name} {model.provider === 'openrouter' && <Badge variant="secondary" className="ml-auto text-xs">OpenRouter</Badge>}
+                       </DropdownMenuItem>
+                     ))
+                    ) : (
+                      <DropdownMenuItem disabled>
+                        {isFetchingModels ? "Loading models..." : "No models available. Check Settings."}
+                      </DropdownMenuItem>
+                    )}
                  </DropdownMenuContent>
                </DropdownMenu>
 
@@ -354,6 +574,7 @@ export default function ChatInterface() {
           </TabsList>
         </CardHeader>
 
+        {/* Chat Tab */}
         <TabsContent value="chat" className="flex-1 overflow-hidden p-0 m-0 data-[state=inactive]:hidden">
            <ScrollArea className="h-full p-4" ref={scrollAreaRef}>
             <div className="space-y-4">
@@ -372,25 +593,22 @@ export default function ChatInterface() {
                   )}
                   <div
                     className={cn(
-                      'max-w-[75%] rounded-lg p-3 shadow-sm relative group', // Added relative and group
+                      'max-w-[75%] rounded-lg p-3 shadow-sm relative group',
                       message.sender === 'user'
-                        ? 'bg-primary text-primary-foreground ltr-text' // User messages are always LTR for input consistency
+                        ? 'bg-primary text-primary-foreground ltr-text'
                         : message.isError
-                          ? 'bg-destructive/10 border border-destructive/30 text-destructive ltr-text' // Errors are LTR
-                          : 'bg-secondary text-secondary-foreground', // AI messages base style
-                         // Apply RTL/LTR based on content detection for AI messages
+                          ? 'bg-destructive/10 border border-destructive/30 text-destructive ltr-text'
+                          : 'bg-secondary text-secondary-foreground',
                        message.sender === 'ai' && !message.isError && (isPersian(message.text) ? 'rtl-text' : 'ltr-text')
                     )}
                   >
                     {message.file && (
-                      <div className="mb-2 p-2 border rounded-md bg-muted/50 flex items-center gap-2 text-sm ltr-text"> {/* File info always LTR */}
+                      <div className="mb-2 p-2 border rounded-md bg-muted/50 flex items-center gap-2 text-sm ltr-text">
                         <Paperclip size={14} />
                         <span>{message.file.name}</span>
                       </div>
                     )}
-                    {/* Apply whitespace-pre-wrap to preserve line breaks */}
                     <p className="text-sm whitespace-pre-wrap">{message.text}</p>
-                     {/* Show cost tooltip on hover for AI messages (only non-errors) */}
                     {message.sender === 'ai' && !message.isError && message.cost !== undefined && (
                        <TooltipProvider delayDuration={100}>
                           <Tooltip>
@@ -432,11 +650,12 @@ export default function ChatInterface() {
           </ScrollArea>
         </TabsContent>
 
+        {/* Analyse Tab */}
         <TabsContent value="analyse" className="flex-1 overflow-hidden p-0 m-0 data-[state=inactive]:hidden">
           <ScrollArea className="h-full p-4" ref={analyseScrollAreaRef}>
             <div className="space-y-4">
               <h3 className="text-lg font-semibold mb-2 text-primary">API Usage Analysis</h3>
-               {aiMessages.length > 0 ? ( // Use filtered aiMessages here
+               {aiMessages.length > 0 ? (
                  <Table>
                    <TableCaption>Estimated cost per successful AI response. Total estimated cost: {formatCurrency(totalCost)}</TableCaption>
                     <TableHeader>
@@ -448,7 +667,7 @@ export default function ChatInterface() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {aiMessages.map((msg) => ( // Use filtered aiMessages here
+                      {aiMessages.map((msg) => (
                         <TableRow key={msg.id}>
                           <TableCell className="text-xs">{new Date(msg.timestamp).toLocaleString()}</TableCell>
                           <TableCell className="text-xs">{getModelName(msg.modelId)}</TableCell>
@@ -473,61 +692,146 @@ export default function ChatInterface() {
           </ScrollArea>
         </TabsContent>
 
-        <TabsContent value="settings" className="flex-1 overflow-hidden p-0 m-0 data-[state=inactive]:hidden">
-           <ScrollArea className="h-full p-4" ref={settingsScrollAreaRef}>
-             <div className="space-y-6 max-w-md mx-auto">
-               <h3 className="text-lg font-semibold mb-4 text-primary flex items-center"><Settings className="mr-2 h-5 w-5" /> Settings</h3>
+        {/* Settings Tab */}
+         <TabsContent value="settings" className="flex-1 overflow-hidden p-0 m-0 data-[state=inactive]:hidden">
+            <ScrollArea className="h-full p-6" ref={settingsScrollAreaRef}>
+              <div className="space-y-8 max-w-3xl mx-auto">
+                <h3 className="text-xl font-semibold mb-4 text-primary flex items-center"><Settings className="mr-2 h-5 w-5" /> Settings</h3>
 
-               <div className="space-y-2">
-                 <Label htmlFor="openrouter-api-key" className="flex items-center">
-                    <Key className="mr-2 h-4 w-4" /> OpenRouter API Key
-                 </Label>
-                 <p className="text-sm text-muted-foreground">
-                   Enter your OpenRouter API key to use models like Mistral, Claude, GPT-4o Mini, etc.
-                   Get your key from <a href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer" className="underline text-accent hover:text-accent/80">OpenRouter Keys</a>.
-                   The key will be stored securely in your browser's local storage.
-                 </p>
-                 <div className="flex items-center gap-2">
-                   <Input
-                     id="openrouter-api-key"
-                     type="password" // Use password type to obscure key
-                     placeholder="sk-or-v1-..."
-                     value={openRouterApiKey}
-                     onChange={(e) => setOpenRouterApiKey(e.target.value)}
-                     className="flex-1"
-                   />
-                   <Button onClick={handleSaveApiKey} disabled={!openRouterApiKey.trim()}>
-                      {apiKeySaved ? <CheckCircle className="mr-2 h-4 w-4" /> : <Save className="mr-2 h-4 w-4" />}
-                      {apiKeySaved ? 'Saved!' : 'Save Key'}
-                   </Button>
-                 </div>
-                 {apiKeySaved && <p className="text-sm text-green-600">API Key saved successfully!</p>}
-               </div>
+                {/* API Key Section */}
+                <div className="space-y-3 p-4 border rounded-lg shadow-sm">
+                  <Label htmlFor="openrouter-api-key" className="flex items-center text-base font-medium">
+                     <Key className="mr-2 h-4 w-4" /> OpenRouter API Key
+                  </Label>
+                  <p className="text-sm text-muted-foreground">
+                    Enter your OpenRouter API key to fetch and use models like Mistral, Claude, GPT-4o Mini, etc.
+                    Get your key from <a href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer" className="underline text-accent hover:text-accent/80">OpenRouter Keys</a>.
+                    The key is stored in your browser's local storage.
+                  </p>
+                  <div className="flex flex-col sm:flex-row items-center gap-2">
+                    <Input
+                      id="openrouter-api-key"
+                      type="password"
+                      placeholder="sk-or-v1-..."
+                      value={openRouterApiKey}
+                      onChange={(e) => setOpenRouterApiKey(e.target.value)}
+                      className="flex-1"
+                    />
+                    <Button onClick={handleSaveApiKey} disabled={!openRouterApiKey.trim()} className="w-full sm:w-auto">
+                       {apiKeySaved ? <CheckCircle className="mr-2 h-4 w-4" /> : <Save className="mr-2 h-4 w-4" />}
+                       {apiKeySaved ? 'Saved!' : 'Save Key'}
+                    </Button>
+                  </div>
+                  {apiKeySaved && <p className="text-sm text-green-600 mt-1">API Key saved successfully!</p>}
+                  <Alert className="mt-3">
+                     <AlertTitle>Security Note</AlertTitle>
+                     <AlertDescription>
+                       Your API key is stored only in your browser's local storage and is used directly for API calls to OpenRouter.
+                     </AlertDescription>
+                  </Alert>
+                </div>
 
-               <Alert>
-                  <AlertTitle>Security Note</AlertTitle>
-                  <AlertDescription>
-                    Your API key is stored only in your browser's local storage and is not sent to our servers (except when making direct calls to OpenRouter on your behalf). Be cautious about sharing your keys.
-                  </AlertDescription>
-               </Alert>
+                {/* Model Selection Section */}
+                <div className="space-y-4 p-4 border rounded-lg shadow-sm">
+                  <div className="flex justify-between items-center gap-2 flex-wrap">
+                    <h4 className="text-base font-medium flex items-center"><BrainCircuit className="mr-2 h-4 w-4" /> Manage OpenRouter Models</h4>
+                    <Button onClick={handleRefreshModels} variant="outline" size="sm" disabled={isFetchingModels || !openRouterApiKey}>
+                      {isFetchingModels ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                      {isFetchingModels ? 'Fetching...' : 'Refresh List'}
+                    </Button>
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                     Select the OpenRouter models you want to make available in the chat interface. Click 'Import Selections' to update the list.
+                   </p>
 
-               {/* Placeholder for future settings */}
-               {/*
-               <Separator />
-               <div>
-                 <h4 className="text-md font-semibold mb-2">Other Settings</h4>
-                 <p className="text-sm text-muted-foreground">More settings will be available here in the future.</p>
-               </div>
-               */}
-             </div>
-           </ScrollArea>
-         </TabsContent>
+                  {fetchModelsError && (
+                     <Alert variant="destructive">
+                       <AlertTitle>Error Fetching Models</AlertTitle>
+                       <AlertDescription>{fetchModelsError}</AlertDescription>
+                     </Alert>
+                   )}
+
+                   {!openRouterApiKey && (
+                       <Alert variant="default">
+                          <AlertTitle>API Key Required</AlertTitle>
+                          <AlertDescription>Please enter and save your OpenRouter API key above to fetch models.</AlertDescription>
+                       </Alert>
+                   )}
+
+                  {openRouterApiKey && !isFetchingModels && allOpenRouterModels.length > 0 && (
+                      <>
+                        <div className="flex flex-col sm:flex-row gap-2">
+                           <Input
+                             type="search"
+                             placeholder="Filter models by name or ID..."
+                             value={filterTerm}
+                             onChange={(e) => setFilterTerm(e.target.value)}
+                             className="flex-1"
+                           />
+                           <div className="flex gap-2">
+                             <Button onClick={handleSelectAllFilteredModels} variant="secondary" size="sm" className="flex-1 sm:flex-none">Select Filtered</Button>
+                             <Button onClick={handleDeselectAllFilteredModels} variant="secondary" size="sm" className="flex-1 sm:flex-none">Deselect Filtered</Button>
+                            </div>
+                        </div>
+
+                        <ScrollArea className="h-64 border rounded-md">
+                          <div className="p-4 space-y-3">
+                            {filteredModels.length > 0 ? (
+                              filteredModels.map((model) => (
+                                <div key={model.id} className="flex items-center space-x-3 bg-background p-2 rounded hover:bg-muted/50 transition-colors">
+                                  <Checkbox
+                                    id={`model-${model.id}`}
+                                    checked={selectedOpenRouterModelIds.has(model.id)}
+                                    onCheckedChange={(checked) => handleModelSelectionChange(model.id, checked)}
+                                  />
+                                  <div className="grid gap-1.5 leading-none flex-1 min-w-0">
+                                    <label
+                                      htmlFor={`model-${model.id}`}
+                                      className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 truncate cursor-pointer"
+                                      title={model.name} // Show full name on hover
+                                    >
+                                      {model.name || model.id}
+                                    </label>
+                                    {model.context_length && (
+                                        <p className="text-xs text-muted-foreground">
+                                            Context: {model.context_length.toLocaleString()} tokens
+                                        </p>
+                                    )}
+                                  </div>
+                                  {/* Optional: Display pricing or other info */}
+                                  {/* <Badge variant="outline" className="ml-auto text-xs">
+                                      ${parseFloat(model.pricing.prompt).toFixed(4)}/${parseFloat(model.pricing.completion).toFixed(4)}
+                                  </Badge> */}
+                                </div>
+                              ))
+                            ) : (
+                              <p className="text-sm text-muted-foreground text-center py-4">No models match your filter.</p>
+                            )}
+                          </div>
+                        </ScrollArea>
+
+                        <div className="flex justify-end pt-2">
+                           <Button onClick={handleImportSelectedModels} disabled={selectedOpenRouterModelIds.size === 0}>
+                             <Download className="mr-2 h-4 w-4" /> Import {selectedOpenRouterModelIds.size} Selected Model{selectedOpenRouterModelIds.size !== 1 ? 's' : ''}
+                           </Button>
+                         </div>
+                      </>
+                    )}
+                    {openRouterApiKey && !isFetchingModels && allOpenRouterModels.length === 0 && !fetchModelsError && (
+                         <p className="text-sm text-muted-foreground text-center py-4">No models found or fetched yet. Click 'Refresh List'.</p>
+                     )}
+
+                </div>
+
+
+              </div>
+            </ScrollArea>
+          </TabsContent>
 
 
         <CardFooter className="border-t p-4 flex-col items-start gap-2">
            {error && (
             <Alert variant="destructive" className="mb-2 w-full">
-               {/* <AlertCircle className="h-4 w-4" /> */}
                <AlertTitle>Error</AlertTitle>
               <AlertDescription>{error}</AlertDescription>
             </Alert>
@@ -539,7 +843,7 @@ export default function ChatInterface() {
               className="text-muted-foreground hover:text-accent shrink-0"
               onClick={() => fileInputRef.current?.click()}
               aria-label="Attach file"
-              disabled={isSending || selectedModel.provider === 'openrouter'} // Disable if OpenRouter model selected
+              disabled={isSending || selectedModel.provider === 'openrouter'}
               title={selectedModel.provider === 'openrouter' ? "File attachment not supported for selected OpenRouter model" : "Attach file"}
             >
               <Paperclip className="h-5 w-5" />
@@ -549,9 +853,8 @@ export default function ChatInterface() {
               ref={fileInputRef}
               onChange={handleFileChange}
               className="hidden"
-              // Accept common text/image/pdf types, adjust as needed
               accept=".txt,.pdf,.jpg,.jpeg,.png,.webp,.md"
-              disabled={selectedModel.provider === 'openrouter'} // Also disable the input itself
+              disabled={selectedModel.provider === 'openrouter'}
             />
              <Textarea
               placeholder="Type your message or drop a file (if supported by model)..."
@@ -561,7 +864,7 @@ export default function ChatInterface() {
               className="flex-1 resize-none min-h-[40px] max-h-[150px] text-sm"
               rows={1}
               disabled={isSending}
-              dir={isPersian(input) ? 'rtl' : 'ltr'} // Set direction based on input
+              dir={isPersian(input) ? 'rtl' : 'ltr'}
             />
             <Button
               variant="ghost"
@@ -579,7 +882,7 @@ export default function ChatInterface() {
             <Button
               size="icon"
               onClick={handleSend}
-              disabled={isSending || (!input.trim() && !selectedFile) || (selectedFile && selectedModel.provider === 'openrouter') || (selectedModel.provider === 'openrouter' && !openRouterApiKey && !process.env.NEXT_PUBLIC_OPENROUTER_API_KEY)} // Disable send if OpenRouter key missing
+              disabled={isSending || (!input.trim() && !selectedFile) || (selectedFile && selectedModel.provider === 'openrouter') || (selectedModel.provider === 'openrouter' && !openRouterApiKey && !process.env.NEXT_PUBLIC_OPENROUTER_API_KEY)}
                aria-label="Send message"
                className="bg-accent hover:bg-accent/90 text-accent-foreground shrink-0"
                title={
@@ -592,7 +895,7 @@ export default function ChatInterface() {
             </Button>
           </div>
            {selectedFile && (
-              <div className="mt-2 text-sm text-muted-foreground flex items-center gap-2 w-full ltr-text"> {/* File info always LTR */}
+              <div className="mt-2 text-sm text-muted-foreground flex items-center gap-2 w-full ltr-text">
                 <Paperclip size={14} />
                 <span className="truncate max-w-[calc(100%-80px)]">{selectedFile.name}</span>
                 <Button variant="ghost" size="sm" onClick={() => {setSelectedFile(null); setFileDataUri(undefined); setError(null); if(fileInputRef.current) fileInputRef.current.value = '';}} className="p-1 h-auto text-destructive hover:text-destructive/80 ml-auto">
