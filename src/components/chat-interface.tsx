@@ -206,8 +206,7 @@ export default function ChatInterface() {
         if (!apiKey) {
             setAllOpenRouterModels([]); // Clear existing models if key is removed/empty
             setFetchModelsError("API Key is required to fetch models.");
-            // Also clear the active models list, leaving only Google defaults
-             setActiveModels(calculateActiveModels(new Set(), [])); // Use the calculation function
+            // Active models will be updated via the effect below
             return;
         }
         setIsFetchingModels(true);
@@ -236,21 +235,20 @@ export default function ChatInterface() {
              }
             const fetchedModels: OpenRouterApiModel[] = data.data;
             console.log(`Fetched ${fetchedModels.length} OpenRouter models.`);
-
-            setAllOpenRouterModels(fetchedModels);
-            // Update active models list based on the newly fetched data and *current* selections
-             setActiveModels(calculateActiveModels(selectedOpenRouterModelIds, fetchedModels));
+            setAllOpenRouterModels(fetchedModels); // This will trigger Effect 2 below
+            // No need to call setActiveModels here anymore
 
         } catch (error) {
             console.error("Error fetching OpenRouter models:", error);
             const message = error instanceof Error ? error.message : "An unknown error occurred";
             setFetchModelsError(`Error fetching models: ${message}. Check your API key and network connection.`);
             setAllOpenRouterModels([]); // Clear models on error
-             setActiveModels(calculateActiveModels(new Set(), [])); // Reset active models on error
+            // Active models will be cleared by Effect 2
         } finally {
             setIsFetchingModels(false);
         }
-    }, [calculateActiveModels, selectedOpenRouterModelIds]); // Depends on the calculator and current selections
+    // Only depends on the API key itself, not other state that might change frequently.
+    }, []);
 
 
   // --- Effects ---
@@ -264,8 +262,7 @@ export default function ChatInterface() {
     if (storedApiKey) {
       setOpenRouterApiKey(storedApiKey);
       console.log("Loaded OpenRouter API Key from localStorage.");
-      // Trigger fetch immediately if key exists
-       fetchOpenRouterModels(storedApiKey); // Fetch will update allOpenRouterModels and activeModels
+      fetchOpenRouterModels(storedApiKey); // Fetch models using the loaded key
     }
 
     if (storedSelectedModelIdsJson) {
@@ -284,18 +281,13 @@ export default function ChatInterface() {
         localStorage.removeItem(SELECTED_OPENROUTER_MODELS_KEY);
       }
     }
-
-    // Calculate initial active models based on loaded selections and *empty* fetched list initially
-    // The list will be updated again after fetchOpenRouterModels completes if an API key was loaded
-     if (!storedApiKey) {
-        setActiveModels(calculateActiveModels(initialSelectedIds, []));
-     }
-
-  }, [fetchOpenRouterModels, calculateActiveModels]); // Run only once on mount, depends on fetch and calculation functions
+    // Initial calculation of active models happens in Effect 2 after state is set
+  }, [fetchOpenRouterModels]); // Only run once on mount, depends on fetch function
 
 
-  // Effect 2: Update `activeModels` whenever the selected IDs or the list of all models changes.
+  // Effect 2: Update `activeModels` whenever the selected IDs or the list of all fetched models changes.
   useEffect(() => {
+      console.log("Effect 2: Recalculating active models due to change in selected IDs or fetched models.");
       setActiveModels(calculateActiveModels(selectedOpenRouterModelIds, allOpenRouterModels));
   }, [selectedOpenRouterModelIds, allOpenRouterModels, calculateActiveModels]);
 
@@ -303,8 +295,17 @@ export default function ChatInterface() {
   useEffect(() => {
       // Check if the current selectedModel exists in the updated activeModels list
       if (!activeModels.some(m => m.id === selectedModel.id)) {
-          console.log("Selected model no longer active, resetting to default.");
-          setSelectedModel(DEFAULT_GOOGLE_MODELS[0]); // Reset to the first default Google model
+          console.log("Effect 3: Selected model no longer active, resetting to default.");
+          // Only reset if the default model itself exists (edge case: Google models failed?)
+          if (activeModels.some(m => m.id === DEFAULT_GOOGLE_MODELS[0].id)) {
+              setSelectedModel(DEFAULT_GOOGLE_MODELS[0]); // Reset to the first default Google model
+          } else if (activeModels.length > 0) {
+              setSelectedModel(activeModels[0]); // Reset to the first available model
+          } else {
+              // No models available at all? Handle appropriately, maybe show a message
+              console.warn("No active models available to select.");
+              // setSelectedModel(null); // Or some placeholder state
+          }
       }
   }, [activeModels, selectedModel.id]); // Re-run when activeModels changes or selectedModel.id changes
 
@@ -379,10 +380,10 @@ export default function ChatInterface() {
   const handleImportSelectedModels = () => {
       const selectedIdsArray = Array.from(selectedOpenRouterModelIds);
       localStorage.setItem(SELECTED_OPENROUTER_MODELS_KEY, JSON.stringify(selectedIdsArray));
-      // Trigger recalculation of active models by updating the state that Effect 2 depends on
-      // No need to call setActiveModels directly here, the effect will handle it.
-      console.log("Imported selected model IDs to localStorage:", selectedIdsArray);
-      toast({ title: "Models Imported", description: `${selectedOpenRouterModelIds.size} OpenRouter models selection saved. They are now available in the chat list.` });
+      // The change to selectedOpenRouterModelIds via the checkbox handlers already
+      // triggers Effect 2, which updates activeModels. No need to explicitly update state here.
+      console.log("Saved selected model IDs to localStorage:", selectedIdsArray);
+      toast({ title: "Models Selection Saved", description: `${selectedOpenRouterModelIds.size} OpenRouter models selection saved. They are now available in the chat list.` });
    };
 
 
@@ -755,7 +756,7 @@ export default function ChatInterface() {
                     </Button>
                   </div>
                   <p className="text-sm text-muted-foreground">
-                     Select the OpenRouter models you want to make available in the chat interface. Click 'Import Selections' to update the list.
+                     Select the OpenRouter models you want to make available in the chat interface. Click 'Save Selections' below to update the list.
                    </p>
 
                   {fetchModelsError && (
@@ -826,8 +827,8 @@ export default function ChatInterface() {
                         </ScrollArea>
 
                         <div className="flex justify-end pt-2">
-                           <Button onClick={handleImportSelectedModels} disabled={selectedOpenRouterModelIds.size === 0}>
-                             <Download className="mr-2 h-4 w-4" /> Import {selectedOpenRouterModelIds.size} Selected Model{selectedOpenRouterModelIds.size !== 1 ? 's' : ''}
+                           <Button onClick={handleImportSelectedModels} /* Removed disabled={...} as it's just saving now */ >
+                             <Save className="mr-2 h-4 w-4" /> Save {selectedOpenRouterModelIds.size} Selected Model{selectedOpenRouterModelIds.size !== 1 ? 's' : ''}
                            </Button>
                          </div>
                       </>
@@ -923,4 +924,3 @@ export default function ChatInterface() {
     </Card>
   );
 }
-
