@@ -2,7 +2,7 @@
 'use client';
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Send, Paperclip, Mic, Bot, User, DollarSign, BarChart } from 'lucide-react';
+import { Send, Paperclip, Mic, Bot, User, DollarSign, BarChart, BrainCircuit, ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -16,12 +16,35 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableCaption } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+
 
 // --- Pricing Simulation ---
-// These are rough estimates and should be replaced with actual model pricing
-const COST_PER_INPUT_CHAR = 0.000005; // Example cost per input character
-const COST_PER_OUTPUT_CHAR = 0.000015; // Example cost per output character
-const COST_PER_FILE_ANALYSIS = 0.01; // Example flat cost for analyzing a file
+// These are VERY ROUGH ESTIMATES and placeholders.
+// Actual costs depend heavily on the specific model (OpenRouter has varied pricing).
+// These need to be replaced with a more sophisticated pricing lookup based on the selected model.
+const COST_PER_INPUT_CHAR_DEFAULT = 0.000005; // Example cost for a default/cheap model
+const COST_PER_OUTPUT_CHAR_DEFAULT = 0.000015; // Example cost for a default/cheap model
+const COST_PER_FILE_ANALYSIS_GOOGLE = 0.01; // Example flat cost for Google AI file analysis
+
+// --- Available Models ---
+// Add more models as needed. Ensure the ID matches the expected format.
+const AVAILABLE_MODELS = [
+  { id: 'googleai/gemini-2.0-flash', name: 'Google Gemini 2.0 Flash', provider: 'google' },
+  { id: 'openrouter/mistralai/mistral-7b-instruct', name: 'Mistral 7B Instruct (OpenRouter)', provider: 'openrouter'},
+  { id: 'openrouter/google/gemini-flash-1.5', name: 'Gemini Flash 1.5 (OpenRouter)', provider: 'openrouter'},
+  { id: 'openrouter/anthropic/claude-3-haiku', name: 'Claude 3 Haiku (OpenRouter)', provider: 'openrouter'},
+  { id: 'openrouter/openai/gpt-4o-mini', name: 'GPT-4o Mini (OpenRouter)', provider: 'openrouter'},
+  // Add other Google AI models if configured in ai-instance.ts
+  // Add other OpenRouter models: https://openrouter.ai/docs#models
+];
 
 interface Message {
   id: number;
@@ -30,13 +53,51 @@ interface Message {
   file?: { name: string; dataUri: string };
   cost?: number; // Add cost field to store simulated cost
   timestamp: number; // Add timestamp for analysis tab
+  modelId?: string; // Track which model was used for the response
 }
 
 // Helper function to format currency
 const formatCurrency = (amount: number | undefined): string => {
-  if (amount === undefined) return 'N/A';
-  return `$${amount.toFixed(6)}`; // Show more decimal places for small costs
+  if (amount === undefined || amount === null) return 'N/A';
+   // Adjust precision based on magnitude
+   if (amount < 0.0001 && amount > 0) return `$${amount.toExponential(2)}`;
+   if (amount < 0.01 && amount > 0) return `$${amount.toFixed(6)}`;
+  return `$${amount.toFixed(4)}`;
 };
+
+// Placeholder function for more accurate cost calculation based on model
+const calculateCost = (modelId: string, inputLength: number, outputLength: number, hasFile: boolean): number => {
+  // TODO: Implement actual cost lookup based on modelId
+  console.log(`Calculating cost for model: ${modelId}, input: ${inputLength}, output: ${outputLength}, file: ${hasFile}`);
+
+  let inputCostPerChar = COST_PER_INPUT_CHAR_DEFAULT;
+  let outputCostPerChar = COST_PER_OUTPUT_CHAR_DEFAULT;
+  let fileCost = 0;
+
+  const modelInfo = AVAILABLE_MODELS.find(m => m.id === modelId);
+
+  // Example: Assign different placeholder costs based on provider/model name substring
+  if (modelId.includes('gpt-4') || modelId.includes('claude')) { // More expensive models
+      inputCostPerChar = 0.000010;
+      outputCostPerChar = 0.000030;
+  } else if (modelId.startsWith('googleai/')) {
+      inputCostPerChar = 0.000003;
+      outputCostPerChar = 0.000008;
+  } // Keep default for others like Mistral 7B for now
+
+
+  if (hasFile && modelInfo?.provider === 'google') {
+      fileCost = COST_PER_FILE_ANALYSIS_GOOGLE;
+  } else if (hasFile && modelInfo?.provider === 'openrouter') {
+      // OpenRouter multimodal cost varies; add a placeholder or look up specific model
+      fileCost = 0.005; // Placeholder cost for file processing via OpenRouter (if supported by model)
+      console.warn(`File cost calculation for OpenRouter model ${modelId} is a placeholder.`);
+  }
+
+
+  return (inputLength * inputCostPerChar) + (outputLength * outputCostPerChar) + fileCost;
+};
+
 
 export default function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -47,6 +108,8 @@ export default function ChatInterface() {
   const [error, setError] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [totalCost, setTotalCost] = useState<number>(0);
+  const [selectedModel, setSelectedModel] = useState<typeof AVAILABLE_MODELS[0]>(AVAILABLE_MODELS[0]); // Default model
+
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
@@ -65,10 +128,32 @@ export default function ChatInterface() {
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) {
+      // Basic check for potentially large files (e.g., > 10MB)
+      if (file.size > 10 * 1024 * 1024) {
+        setError("File size exceeds 10MB limit. Please select a smaller file.");
+         if (fileInputRef.current) {
+            fileInputRef.current.value = ''; // Reset file input
+         }
+        return;
+      }
+
+      // Check if the selected model supports file input
+      // Note: This is a simplification. Actual support depends on the specific model's capabilities.
+      // Currently, we assume only Google AI models *might* support files via the flows.
+      if (selectedModel.provider === 'openrouter') {
+         setError(`File input is not currently supported with the selected OpenRouter model (${selectedModel.name}). Please select a Google AI model or send text only.`);
+         if (fileInputRef.current) {
+            fileInputRef.current.value = ''; // Reset file input
+         }
+         return; // Prevent setting the file
+      }
+
+
       setSelectedFile(file);
       const reader = new FileReader();
       reader.onloadend = () => {
         setFileDataUri(reader.result as string);
+        setError(null); // Clear previous errors on successful load
       };
       reader.onerror = (err) => {
         console.error("Error reading file:", err);
@@ -85,72 +170,78 @@ export default function ChatInterface() {
 
   const handleSend = useCallback(async () => {
     if (!input.trim() && !selectedFile) return;
+     if (selectedFile && selectedModel.provider === 'openrouter') {
+        setError(`File input is not currently supported with the selected OpenRouter model (${selectedModel.name}). Remove the file or choose a Google AI model.`);
+        return;
+     }
+
 
     setError(null);
     const timestamp = Date.now();
+    const userMessageText = input; // Store input before clearing
+    const userMessageFile = selectedFile ? { name: selectedFile.name, dataUri: fileDataUri! } : undefined;
+
     const userMessage: Message = {
       id: timestamp,
       sender: 'user',
-      text: input,
+      text: userMessageText,
       timestamp: timestamp,
-      ...(selectedFile && { file: { name: selectedFile.name, dataUri: fileDataUri! } }),
+      ...(userMessageFile && { file: userMessageFile }),
     };
     setMessages((prev) => [...prev, userMessage]);
+
+    // Clear inputs *after* capturing their state
     setInput('');
-    const currentInput = input;
-    const currentFileDataUri = fileDataUri;
-    const currentSelectedFile = selectedFile; // Keep track of the file for cost calculation
     setSelectedFile(null);
     setFileDataUri(undefined);
     setIsSending(true);
 
-    let calculatedCost = 0;
-
     try {
-      let response: SmartAssistantPromptingOutput | FileBasedContentUnderstandingOutput;
+      let response: SmartAssistantPromptingOutput; // Use the union type if fileBased... is still needed
+      let calculatedCost = 0;
 
-      if (currentFileDataUri) {
-        calculatedCost += COST_PER_FILE_ANALYSIS; // Add file analysis cost
-        calculatedCost += currentInput.length * COST_PER_INPUT_CHAR; // Add input text cost
+      // Use smartAssistantPrompting for both Google and OpenRouter
+      const assistantInput: SmartAssistantPromptingInput = {
+        modelId: selectedModel.id,
+        prompt: userMessageText,
+        ...(userMessageFile && { fileDataUri: userMessageFile.dataUri }), // Pass file URI if present
+      };
 
-        const fileInput: FileBasedContentUnderstandingInput = {
-          prompt: currentInput,
-          fileDataUri: currentFileDataUri,
-        };
-        response = await fileBasedContentUnderstanding(fileInput);
-        calculatedCost += response.response.length * COST_PER_OUTPUT_CHAR; // Add output text cost
+      console.log("Sending to smartAssistantPrompting with input:", assistantInput);
+      response = await smartAssistantPrompting(assistantInput);
+      console.log("Received response from smartAssistantPrompting:", response);
 
-      } else {
-        calculatedCost += currentInput.length * COST_PER_INPUT_CHAR; // Add input text cost
 
-        const assistantInput: SmartAssistantPromptingInput = {
-          modelId: 'googleai/gemini-2.0-flash', // Make sure this model ID is consistent if pricing depends on it
-          prompt: currentInput,
-        };
-        response = await smartAssistantPrompting(assistantInput);
-         calculatedCost += response.response.length * COST_PER_OUTPUT_CHAR; // Add output text cost
-      }
+      // Calculate cost after getting response length
+       calculatedCost = calculateCost(
+        selectedModel.id,
+        userMessageText.length,
+        response.response.length,
+        !!userMessageFile
+      );
+
 
       const aiMessage: Message = {
-        id: Date.now() + 1, // Ensure unique ID even if requests are fast
+        id: Date.now() + 1, // Ensure unique ID
         sender: 'ai',
         text: response.response,
-        cost: calculatedCost, // Store calculated cost
+        cost: calculatedCost,
         timestamp: Date.now(),
+        modelId: selectedModel.id, // Store the model used
       };
       setMessages((prev) => [...prev, aiMessage]);
-      setTotalCost((prevTotal) => prevTotal + calculatedCost); // Update total cost
+      setTotalCost((prevTotal) => prevTotal + calculatedCost);
 
     } catch (err) {
       console.error("Error calling AI:", err);
       const errorMessage = err instanceof Error ? err.message : "An unknown error occurred.";
       setError(`Failed to get response from AI: ${errorMessage}`);
       const errorTimestamp = Date.now();
-       setMessages((prev) => [...prev, {id: errorTimestamp + 1, sender: 'ai', text: `Error: Could not process the request. ${errorMessage}`, cost: 0, timestamp: errorTimestamp}]); // Add cost: 0 for error messages
+       setMessages((prev) => [...prev, {id: errorTimestamp + 1, sender: 'ai', text: `Error: Could not process the request. ${errorMessage}`, cost: 0, timestamp: errorTimestamp, modelId: selectedModel.id}]);
     } finally {
       setIsSending(false);
     }
-  }, [input, selectedFile, fileDataUri]);
+  }, [input, selectedFile, fileDataUri, selectedModel]); // Add selectedModel dependency
 
   const handleKeyPress = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey) {
@@ -166,13 +257,44 @@ export default function ChatInterface() {
   };
 
   const aiMessages = messages.filter(m => m.sender === 'ai');
+  const getModelName = (modelId: string | undefined) => {
+      if (!modelId) return 'Unknown Model';
+      return AVAILABLE_MODELS.find(m => m.id === modelId)?.name || modelId;
+  }
+
 
   return (
     <Card className="w-full max-w-4xl h-[80vh] flex flex-col shadow-lg rounded-lg">
       <Tabs defaultValue="chat" className="flex flex-col h-full">
-        <CardHeader className="border-b flex flex-row justify-between items-center p-4">
-          <CardTitle className="text-lg font-semibold text-primary">AI-ssistant</CardTitle>
-           <TabsList className="grid grid-cols-2 w-[200px]">
+        <CardHeader className="border-b flex flex-row justify-between items-center p-4 gap-4">
+          <CardTitle className="text-lg font-semibold text-primary whitespace-nowrap">AI Assistant</CardTitle>
+
+            {/* Model Selector Dropdown */}
+            <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" className="w-full md:w-auto justify-between min-w-[200px]">
+                    <BrainCircuit className="mr-2 h-4 w-4" />
+                    <span className="truncate flex-1 text-left">{selectedModel.name}</span>
+                    <ChevronDown className="ml-2 h-4 w-4 opacity-50" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-[--radix-dropdown-menu-trigger-width]">
+                  <DropdownMenuLabel>Select AI Model</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  {AVAILABLE_MODELS.map((model) => (
+                    <DropdownMenuItem
+                      key={model.id}
+                      onSelect={() => setSelectedModel(model)}
+                      disabled={isSending}
+                    >
+                      {model.name}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+
+
+           <TabsList className="grid grid-cols-2 w-[200px] shrink-0">
             <TabsTrigger value="chat">Chat</TabsTrigger>
             <TabsTrigger value="analyse">Analyse</TabsTrigger>
           </TabsList>
@@ -211,12 +333,22 @@ export default function ChatInterface() {
                     <p className="text-sm whitespace-pre-wrap">{message.text}</p>
                      {/* Show cost tooltip on hover for AI messages */}
                     {message.sender === 'ai' && message.cost !== undefined && (
-                      <Badge
-                        variant="secondary"
-                        className="absolute -bottom-2 -right-2 opacity-70 group-hover:opacity-100 transition-opacity text-xs px-1.5 py-0.5"
-                      >
-                        ~{formatCurrency(message.cost)}
-                      </Badge>
+                       <TooltipProvider delayDuration={100}>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                               <Badge
+                                variant="secondary"
+                                className="absolute -bottom-2 -right-2 opacity-70 group-hover:opacity-100 transition-opacity text-xs px-1.5 py-0.5 cursor-help"
+                              >
+                                ~{formatCurrency(message.cost)}
+                              </Badge>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom" align="end">
+                              <p>Model: {getModelName(message.modelId)}</p>
+                              <p>Est. Cost: {formatCurrency(message.cost)}</p>
+                           </TooltipContent>
+                          </Tooltip>
+                       </TooltipProvider>
                     )}
                   </div>
                    {message.sender === 'user' && (
@@ -251,6 +383,7 @@ export default function ChatInterface() {
                     <TableHeader>
                       <TableRow>
                         <TableHead>Timestamp</TableHead>
+                        <TableHead>Model Used</TableHead>
                         <TableHead>Response Snippet</TableHead>
                         <TableHead className="text-right">Est. Cost</TableHead>
                       </TableRow>
@@ -258,13 +391,14 @@ export default function ChatInterface() {
                     <TableBody>
                       {aiMessages.map((msg) => (
                         <TableRow key={msg.id}>
-                          <TableCell>{new Date(msg.timestamp).toLocaleString()}</TableCell>
-                          <TableCell className="max-w-[300px] truncate">{msg.text}</TableCell>
-                          <TableCell className="text-right">{formatCurrency(msg.cost)}</TableCell>
+                          <TableCell className="text-xs">{new Date(msg.timestamp).toLocaleString()}</TableCell>
+                          <TableCell className="text-xs">{getModelName(msg.modelId)}</TableCell>
+                          <TableCell className="max-w-[250px] truncate text-xs">{msg.text}</TableCell>
+                          <TableCell className="text-right text-xs">{formatCurrency(msg.cost)}</TableCell>
                         </TableRow>
                       ))}
                       <TableRow className="font-semibold bg-muted/50">
-                          <TableCell colSpan={2}>Total Estimated Cost</TableCell>
+                          <TableCell colSpan={3}>Total Estimated Cost</TableCell>
                           <TableCell className="text-right">{formatCurrency(totalCost)}</TableCell>
                       </TableRow>
                     </TableBody>
@@ -283,7 +417,7 @@ export default function ChatInterface() {
         <CardFooter className="border-t p-4 flex-col items-start gap-2">
            {error && (
             <Alert variant="destructive" className="mb-2 w-full">
-              <AlertTitle>Error</AlertTitle>
+               <AlertTitle>Error</AlertTitle>
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           )}
@@ -294,7 +428,8 @@ export default function ChatInterface() {
               className="text-muted-foreground hover:text-accent shrink-0"
               onClick={() => fileInputRef.current?.click()}
               aria-label="Attach file"
-              disabled={isSending}
+              disabled={isSending} // Consider disabling based on model capabilities too
+              title={selectedModel.provider === 'openrouter' ? "File attachment not supported for selected OpenRouter model" : "Attach file"}
             >
               <Paperclip className="h-5 w-5" />
             </Button>
@@ -303,9 +438,11 @@ export default function ChatInterface() {
               ref={fileInputRef}
               onChange={handleFileChange}
               className="hidden"
+              // Accept common text/image/pdf types, adjust as needed
+              accept=".txt,.pdf,.jpg,.jpeg,.png,.webp,.md"
             />
              <Textarea
-              placeholder="Type your message or drop a file..."
+              placeholder="Type your message or drop a file (if supported by model)..."
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyPress={handleKeyPress}
@@ -329,9 +466,10 @@ export default function ChatInterface() {
             <Button
               size="icon"
               onClick={handleSend}
-              disabled={isSending || (!input.trim() && !selectedFile)}
+              disabled={isSending || (!input.trim() && !selectedFile) || (selectedFile && selectedModel.provider === 'openrouter')}
                aria-label="Send message"
                className="bg-accent hover:bg-accent/90 text-accent-foreground shrink-0"
+               title={selectedFile && selectedModel.provider === 'openrouter' ? `Cannot send file with ${selectedModel.name}` : "Send message"}
             >
               <Send className="h-5 w-5" />
             </Button>
@@ -340,7 +478,7 @@ export default function ChatInterface() {
               <div className="mt-2 text-sm text-muted-foreground flex items-center gap-2 w-full">
                 <Paperclip size={14} />
                 <span className="truncate max-w-[calc(100%-80px)]">{selectedFile.name}</span>
-                <Button variant="ghost" size="sm" onClick={() => {setSelectedFile(null); setFileDataUri(undefined);}} className="p-1 h-auto text-destructive hover:text-destructive/80 ml-auto">
+                <Button variant="ghost" size="sm" onClick={() => {setSelectedFile(null); setFileDataUri(undefined); setError(null);}} className="p-1 h-auto text-destructive hover:text-destructive/80 ml-auto">
                   Remove
                 </Button>
               </div>
@@ -350,3 +488,11 @@ export default function ChatInterface() {
     </Card>
   );
 }
+
+// Add Tooltip components if not already globally available
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
