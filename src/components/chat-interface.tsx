@@ -1,4 +1,3 @@
-
 'use client';
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
@@ -55,6 +54,7 @@ const CHAT_SESSIONS_STORAGE_KEY = 'chat_sessions';
 const ACTIVE_SESSION_ID_STORAGE_KEY = 'active_chat_session_id';
 const OPENROUTER_API_KEY_STORAGE_KEY = 'openrouter_api_key';
 const SELECTED_OPENROUTER_MODELS_KEY = 'selected_openrouter_models';
+const CHAT_FOLDERS_STORAGE_KEY = 'chat_folders'; // Placeholder for future folder feature
 
 // --- Default Models ---
 const DEFAULT_GOOGLE_MODELS = [
@@ -101,8 +101,16 @@ interface ChatSession {
   totalCost: number;
   modelId?: string; // Optional: Store the *last used* or *predominant* model for the session
   folderId?: string | null; // For future folder feature
-  isBookmarked?: boolean; // For future bookmark feature
+  isBookmarked?: boolean; // For bookmark feature
 }
+
+// --- Folder Interface (Placeholder) ---
+interface ChatFolder {
+    id: string;
+    name: string;
+    createdAt: number;
+}
+
 
 // --- Pricing Simulation (Keep as before) ---
 const COST_PER_INPUT_CHAR_DEFAULT = 0.000005;
@@ -164,6 +172,10 @@ export default function ChatInterface() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null); // Track which session name is being edited
   const [editingSessionName, setEditingSessionName] = useState<string>(""); // Temp storage for edited name
+  // --- Folder State (Placeholder) ---
+  const [folders, setFolders] = useState<ChatFolder[]>([]); // Add state for folders
+  // const [showFolderModal, setShowFolderModal] = useState(false);
+  // const [sessionToMove, setSessionToMove] = useState<string | null>(null);
 
 
   // Refs
@@ -236,7 +248,7 @@ export default function ChatInterface() {
               lastModified: s.lastModified || Date.now(),
               totalCost: s.totalCost || 0,
               folderId: s.folderId || null,
-              isBookmarked: s.isBookmarked || false,
+              isBookmarked: s.isBookmarked || false, // Ensure isBookmarked exists
           }));
         }
       }
@@ -368,6 +380,56 @@ export default function ChatInterface() {
       toast({ title: "Name Updated", description: "Session name has been saved." });
   }, [editingSessionName, saveSessionsToLocalStorage, toast]);
 
+   const toggleBookmark = useCallback((sessionId: string) => {
+       setChatSessions(prevSessions => {
+           const updatedSessions = prevSessions.map(session =>
+               session.id === sessionId ? { ...session, isBookmarked: !session.isBookmarked, lastModified: Date.now() } : session
+           );
+           saveSessionsToLocalStorage(updatedSessions);
+           return updatedSessions;
+       });
+       const session = chatSessions.find(s => s.id === sessionId);
+       if (session) {
+           toast({
+               title: session.isBookmarked ? "Bookmark Removed" : "Bookmark Added",
+               description: `Session "${session.name}" ${session.isBookmarked ? 'removed from' : 'added to'} bookmarks.`
+           });
+       }
+   }, [chatSessions, saveSessionsToLocalStorage, toast]);
+
+   // --- Folder Functions (Placeholders - Need UI Implementation) ---
+   const createFolder = useCallback((folderName: string) => {
+       const newFolder: ChatFolder = {
+           id: `folder_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+           name: folderName,
+           createdAt: Date.now(),
+       };
+       setFolders(prev => {
+           const updated = [...prev, newFolder];
+           // TODO: Save folders to local storage
+           // localStorage.setItem(CHAT_FOLDERS_STORAGE_KEY, JSON.stringify(updated));
+           return updated;
+       });
+       toast({ title: "Folder Created", description: `Folder "${folderName}" created.`});
+   }, [toast]);
+
+   const moveSessionToFolder = useCallback((sessionId: string, folderId: string | null) => {
+        setChatSessions(prevSessions => {
+            const updatedSessions = prevSessions.map(session =>
+                session.id === sessionId ? { ...session, folderId: folderId, lastModified: Date.now() } : session
+            );
+            saveSessionsToLocalStorage(updatedSessions);
+            return updatedSessions;
+        });
+        const session = chatSessions.find(s => s.id === sessionId);
+        const folder = folders.find(f => f.id === folderId);
+        toast({
+             title: "Session Moved",
+             description: `Session "${session?.name}" moved ${folderId ? `to folder "${folder?.name}"` : 'out of folder'}.`
+        });
+   }, [chatSessions, folders, saveSessionsToLocalStorage, toast]);
+
+
   // --- Model Fetching & Management (Keep as before) ---
   const calculateActiveModels = useCallback((selectedIds: Set<string>, allFetchedModels: OpenRouterApiModel[]): AIModelInfo[] => {
       const selectedOpenRouterModels = allFetchedModels
@@ -443,6 +505,10 @@ export default function ChatInterface() {
     }
 
     // Initial active models calculation happens in Effect 2
+    // TODO: Load folders from local storage here as well
+    // const storedFolders = localStorage.getItem(CHAT_FOLDERS_STORAGE_KEY);
+    // if (storedFolders) { setFolders(JSON.parse(storedFolders)); }
+
   }, [loadSessionsFromLocalStorage, fetchOpenRouterModels, createNewSession]);
 
    // Effect 1.5: Ensure an active session exists if none is set after initial load/delete
@@ -688,10 +754,17 @@ export default function ChatInterface() {
       );
   }, [allOpenRouterModels, filterTerm]);
 
-  // Sort sessions for the History tab (most recent first)
-  const sortedSessions = React.useMemo(() => {
-     return [...chatSessions].sort((a, b) => b.lastModified - a.lastModified);
-  }, [chatSessions]);
+   // Sort sessions for the History tab (most recent first, bookmarked first within that)
+   const sortedSessions = React.useMemo(() => {
+      // TODO: Implement folder filtering/grouping here
+      return [...chatSessions].sort((a, b) => {
+         // Sort bookmarked items first
+         if (a.isBookmarked && !b.isBookmarked) return -1;
+         if (!a.isBookmarked && b.isBookmarked) return 1;
+         // Then sort by last modified date (newest first)
+         return b.lastModified - a.lastModified;
+     });
+   }, [chatSessions]); // Add folders dependency when implemented
 
 
   // --- Render ---
@@ -708,7 +781,21 @@ export default function ChatInterface() {
       {(activeSession || chatSessions.length === 0) && (
         <Tabs value={activeTab} onValueChange={setActiveTab} className="flex flex-col h-full">
           <CardHeader className="border-b flex flex-row justify-between items-center p-4 gap-4 flex-wrap">
-            <CardTitle className="text-lg font-semibold text-primary whitespace-nowrap">AI Assistant</CardTitle>
+            <div className="flex items-center gap-2">
+                 <CardTitle className="text-lg font-semibold text-primary whitespace-nowrap">AI Assistant</CardTitle>
+                 {/* Add New Chat Button */}
+                 <TooltipProvider delayDuration={100}>
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                             <Button size="icon" variant="ghost" onClick={createNewSession} className="h-7 w-7 text-muted-foreground hover:text-primary">
+                                 <PlusCircle size={16} />
+                                 <span className="sr-only">New Chat</span>
+                             </Button>
+                         </TooltipTrigger>
+                         <TooltipContent side="bottom"><p>New Chat</p></TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+             </div>
 
                {/* Model Selector Dropdown */}
                <DropdownMenu>
@@ -783,7 +870,11 @@ export default function ChatInterface() {
              <div className="h-full flex flex-col">
                  <div className="p-4 border-b flex justify-between items-center">
                     <h3 className="text-lg font-semibold text-primary">Chat History</h3>
-                    <Button size="sm" onClick={createNewSession}>
+                    {/* Placeholder for folder actions */}
+                    {/* <Button size="sm" variant="outline" onClick={() => alert('Create Folder clicked!')}>
+                        <FolderPlus className="mr-2 h-4 w-4" /> Create Folder
+                    </Button> */}
+                     <Button size="sm" onClick={createNewSession}>
                         <PlusCircle className="mr-2 h-4 w-4" /> New Chat
                     </Button>
                  </div>
@@ -797,32 +888,55 @@ export default function ChatInterface() {
                                           "p-3 rounded-md border flex items-center justify-between gap-2 cursor-pointer transition-colors hover:bg-muted/50",
                                           session.id === activeSessionId && "bg-accent/20 border-accent"
                                       )}
+                                      onClick={() => switchSession(session.id)} // Make the whole item clickable to switch
                                   >
-                                     <div className="flex-1 min-w-0" onClick={() => switchSession(session.id)}>
-                                        {editingSessionId === session.id ? (
-                                             <div className="flex items-center gap-2">
-                                                 <Input
-                                                    ref={editNameInputRef}
-                                                     type="text"
-                                                     value={editingSessionName}
-                                                     onChange={(e) => setEditingSessionName(e.target.value)}
-                                                     onKeyDown={(e) => handleEditNameKeyDown(e, session.id)}
-                                                     onBlur={() => saveEditedSessionName(session.id)} // Save on blur
-                                                     className="h-8 text-sm flex-1"
-                                                     maxLength={MAX_SESSION_NAME_LENGTH}
-                                                 />
-                                                  <Button variant="ghost" size="icon" className="h-7 w-7" onClick={(e) => {e.stopPropagation(); saveEditedSessionName(session.id); }}> <CheckCircle size={16} className="text-green-600"/> </Button>
-                                                  <Button variant="ghost" size="icon" className="h-7 w-7" onClick={(e) => {e.stopPropagation(); cancelEditingSessionName(); }}> <X size={16} /> </Button>
-                                              </div>
-                                         ) : (
-                                             <p className="text-sm font-medium truncate" title={session.name}>
-                                                 {session.name || DEFAULT_SESSION_NAME}
+                                     <div className="flex-1 min-w-0 flex items-center gap-2">
+                                         {/* Bookmark Icon */}
+                                         <TooltipProvider delayDuration={100}>
+                                             <Tooltip>
+                                                 <TooltipTrigger asChild>
+                                                     <Button
+                                                         variant="ghost"
+                                                         size="icon"
+                                                         className={cn("h-7 w-7 shrink-0 text-muted-foreground hover:text-yellow-500", session.isBookmarked && "text-yellow-500 hover:text-yellow-600")}
+                                                         onClick={(e) => { e.stopPropagation(); toggleBookmark(session.id); }}
+                                                     >
+                                                         <Bookmark size={14} fill={session.isBookmarked ? 'currentColor' : 'none'} />
+                                                         <span className="sr-only">{session.isBookmarked ? 'Remove Bookmark' : 'Add Bookmark'}</span>
+                                                     </Button>
+                                                 </TooltipTrigger>
+                                                 <TooltipContent side="top"><p>{session.isBookmarked ? 'Remove Bookmark' : 'Add Bookmark'}</p></TooltipContent>
+                                             </Tooltip>
+                                         </TooltipProvider>
+                                          {/* Session Name and Info */}
+                                         <div className="flex-1 min-w-0" onClick={() => switchSession(session.id)}>
+                                             {editingSessionId === session.id ? (
+                                                 <div className="flex items-center gap-2">
+                                                     <Input
+                                                         ref={editNameInputRef}
+                                                         type="text"
+                                                         value={editingSessionName}
+                                                         onClick={(e) => e.stopPropagation()} // Prevent li click
+                                                         onChange={(e) => setEditingSessionName(e.target.value)}
+                                                         onKeyDown={(e) => handleEditNameKeyDown(e, session.id)}
+                                                         onBlur={() => saveEditedSessionName(session.id)} // Save on blur
+                                                         className="h-8 text-sm flex-1"
+                                                         maxLength={MAX_SESSION_NAME_LENGTH}
+                                                     />
+                                                     <Button variant="ghost" size="icon" className="h-7 w-7" onClick={(e) => { e.stopPropagation(); saveEditedSessionName(session.id); }}> <CheckCircle size={16} className="text-green-600" /> </Button>
+                                                     <Button variant="ghost" size="icon" className="h-7 w-7" onClick={(e) => { e.stopPropagation(); cancelEditingSessionName(); }}> <X size={16} /> </Button>
+                                                 </div>
+                                             ) : (
+                                                  <p className="text-sm font-medium truncate" title={session.name}>
+                                                     {session.name || DEFAULT_SESSION_NAME}
+                                                 </p>
+                                             )}
+                                             <p className="text-xs text-muted-foreground mt-1">
+                                                 {session.messages.length} message{session.messages.length !== 1 ? 's' : ''} - Last activity: {new Date(session.lastModified).toLocaleString()}
+                                                 {/* {session.folderId && <Badge variant="outline" className="ml-2 text-xs">{folders.find(f => f.id === session.folderId)?.name || 'Folder'}</Badge>} */}
                                              </p>
-                                         )}
-                                          <p className="text-xs text-muted-foreground mt-1">
-                                             {session.messages.length} message{session.messages.length !== 1 ? 's' : ''} - Last activity: {new Date(session.lastModified).toLocaleString()}
-                                         </p>
-                                      </div>
+                                         </div>
+                                     </div>
                                       <div className="flex items-center gap-1 shrink-0">
                                          {/* Edit Button */}
                                         {!editingSessionId && (
@@ -831,6 +945,7 @@ export default function ChatInterface() {
                                              <TooltipTrigger asChild>
                                                   <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={(e) => { e.stopPropagation(); startEditingSessionName(session.id); }}>
                                                       <Edit2 size={14} />
+                                                       <span className="sr-only">Rename</span>
                                                   </Button>
                                                </TooltipTrigger>
                                                <TooltipContent side="top"><p>Rename</p></TooltipContent>
@@ -845,13 +960,14 @@ export default function ChatInterface() {
                                                  <TooltipTrigger asChild>
                                                    <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={(e) => e.stopPropagation()}>
                                                       <Trash2 size={14} />
+                                                      <span className="sr-only">Delete</span>
                                                     </Button>
                                                    </TooltipTrigger>
                                                    <TooltipContent side="top"><p>Delete</p></TooltipContent>
                                                 </Tooltip>
                                               </TooltipProvider>
                                              </AlertDialogTrigger>
-                                            <AlertDialogContent>
+                                            <AlertDialogContent onClick={(e) => e.stopPropagation()}>
                                                 <AlertDialogHeader>
                                                   <AlertDialogTitle>Are you sure?</AlertDialogTitle>
                                                   <AlertDialogDescription>
@@ -865,9 +981,18 @@ export default function ChatInterface() {
                                              </AlertDialogContent>
                                         </AlertDialog>
 
-                                         {/* Bookmark & Folder (Placeholders) */}
-                                         {/* <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-yellow-500" onClick={(e) => e.stopPropagation()}><Bookmark size={14} /></Button> */}
-                                         {/* <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-blue-500" onClick={(e) => e.stopPropagation()}><FolderPlus size={14} /></Button> */}
+                                         {/* Move to Folder (Placeholder) */}
+                                          <TooltipProvider delayDuration={100}>
+                                            <Tooltip>
+                                                <TooltipTrigger asChild>
+                                                 <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-blue-500" onClick={(e) => {e.stopPropagation(); alert('Move to Folder clicked!')} /* Replace alert with modal logic */ }>
+                                                     <FolderPlus size={14} />
+                                                     <span className="sr-only">Move to Folder</span>
+                                                 </Button>
+                                                </TooltipTrigger>
+                                                <TooltipContent side="top"><p>Move to Folder</p></TooltipContent>
+                                            </Tooltip>
+                                          </TooltipProvider>
                                       </div>
                                   </li>
                               ))}
@@ -879,6 +1004,20 @@ export default function ChatInterface() {
                           </div>
                       )}
                    </ScrollArea>
+                   {/* TODO: Folder Modal Implementation */}
+                   {/* <FolderSelectionModal
+                        isOpen={showFolderModal}
+                        onClose={() => setShowFolderModal(false)}
+                        folders={folders}
+                        onSelectFolder={(folderId) => {
+                            if (sessionToMove) {
+                                moveSessionToFolder(sessionToMove, folderId);
+                            }
+                            setShowFolderModal(false);
+                            setSessionToMove(null);
+                        }}
+                        onCreateFolder={createFolder} // Pass create folder function
+                    /> */}
                 </div>
            </TabsContent>
 
