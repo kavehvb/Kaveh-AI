@@ -89,7 +89,10 @@ async (input) => {
          throw new Error("File input is not supported for OpenRouter models.");
       }
 
-    console.log(`Routing to OpenRouter model: ${input.modelId}`);
+    // Extract the actual model ID expected by the OpenRouter API
+    const openRouterModelId = input.modelId.replace(/^openrouter\//, '');
+    console.log(`Routing to OpenRouter model: ${openRouterModelId} (Original ID: ${input.modelId})`);
+
     // Prioritize API key from input, fall back to environment variable
     const apiKey = input.apiKey || process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
@@ -107,7 +110,7 @@ async (input) => {
           // "X-Title": $YOUR_SITE_NAME // Replace with your site name
         },
         body: JSON.stringify({
-          model: input.modelId, // Use the full OpenRouter model ID
+          model: openRouterModelId, // Use the corrected OpenRouter model ID
           messages: [
             { role: "user", content: input.prompt }
             // TODO: Add support for multimodal input if needed and supported by the model
@@ -118,7 +121,15 @@ async (input) => {
       if (!response.ok) {
         const errorBody = await response.text();
         console.error("OpenRouter API Error:", response.status, errorBody);
-        throw new Error(`OpenRouter API request failed with status ${response.status}: ${errorBody}`);
+        // Try parsing the error body as JSON for more details
+        let errorMessage = errorBody;
+        try {
+            const errorJson = JSON.parse(errorBody);
+            errorMessage = errorJson?.error?.message || errorBody;
+        } catch (parseError) {
+            // Ignore if parsing fails, use the raw text
+        }
+        throw new Error(`OpenRouter API request failed with status ${response.status}: ${errorMessage}`);
       }
 
       const data = await response.json();
@@ -155,8 +166,12 @@ async (input) => {
     // However, googleAIPrompt doesn't *define* a model, it relies on the ai instance default or an outer call.
     // Let's explicitly call ai.generate to ensure the correct model is used.
      try {
+        // Determine the actual Google AI model ID
+        const googleAiModelId = input.modelId.replace(/^googleai\//, ''); // Ensure prefix is removed if present, though Genkit might handle it
+        console.log(`Using Genkit with Google AI model: ${googleAiModelId}`);
+
         const { output } = await ai.generate({
-            model: input.modelId, // Specify the Google AI model
+            model: input.modelId, // Use the full ID Genkit expects (e.g., googleai/gemini-...)
             prompt: promptInput,  // Use the simplified input for the prompt template
             output: { schema: googleAIPrompt.outputSchema }, // Ensure output schema matches
              // Pass config if needed, e.g., for temperature (though prompt templates are preferred)
@@ -167,6 +182,7 @@ async (input) => {
          throw new Error('Google AI model did not return a valid output.');
        }
         // Assuming the generate call respects the output schema which has a 'response' field
+        // Cast to 'any' temporarily if the exact output structure isn't strongly typed yet
         return { response: (output as any).response };
 
 
