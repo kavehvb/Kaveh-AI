@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Send, Paperclip, Mic, Bot, User, DollarSign, BarChart, BrainCircuit, ChevronDown, Settings, Key, Save, CheckCircle, RefreshCw, Loader2, Trash2, FolderPlus, Bookmark, PlusCircle, Edit2, X } from 'lucide-react'; // Added icons
+import { Send, Paperclip, Mic, Bot, User, DollarSign, BarChart, BrainCircuit, ChevronDown, Settings, Key, Save, CheckCircle, RefreshCw, Loader2, Trash2, FolderPlus, Bookmark, PlusCircle, Edit2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -41,13 +41,14 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
   AlertDialogTrigger,
-} from "@/components/ui/alert-dialog"; // Import AlertDialog components
+} from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 
 // --- Constants ---
 const DEFAULT_SESSION_NAME = "New Chat";
 const MAX_SESSION_NAME_LENGTH = 50;
-const SESSION_NAME_TRUNCATE_LENGTH = 30; // For auto-generating name from first message
+const SESSION_NAME_TRUNCATE_LENGTH = 30;
+const MAX_SELECTABLE_OPENROUTER_MODELS = 20; // Maximum number of models user can select
 
 // --- Local Storage Keys ---
 const CHAT_SESSIONS_STORAGE_KEY = 'chat_sessions';
@@ -102,6 +103,7 @@ interface ChatSession {
   modelId?: string; // Optional: Store the *last used* or *predominant* model for the session
   folderId?: string | null; // For future folder feature
   isBookmarked?: boolean; // For bookmark feature
+  tags?: string[]; // Add tags field
 }
 
 // --- Folder Interface (Placeholder) ---
@@ -112,13 +114,13 @@ interface ChatFolder {
 }
 
 
-// --- Pricing Simulation (Keep as before) ---
+// --- Pricing Simulation ---
 const COST_PER_INPUT_CHAR_DEFAULT = 0.000005;
 const COST_PER_OUTPUT_CHAR_DEFAULT = 0.000015;
 const COST_PER_FILE_ANALYSIS_GOOGLE = 0.01;
 
 const formatCurrency = (amount: number | undefined | null): string => {
-  if (amount === undefined || amount === null) return '$0.0000'; // Default to zero if undefined/null
+  if (amount === undefined || amount === null) return '$0.0000';
   if (amount === 0) return '$0.0000';
   if (amount < 0.0001 && amount > 0) return `$${amount.toExponential(2)}`;
   if (amount < 0.01 && amount > 0) return `$${amount.toFixed(6)}`;
@@ -155,7 +157,7 @@ export default function ChatInterface() {
   const [fileDataUri, setFileDataUri] = useState<string | undefined>(undefined);
   const [isSending, setIsSending] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [isRecording, setIsRecording] = useState<boolean>(false); // Mic functionality placeholder
+  const [isRecording, setIsRecording] = useState<boolean>(false);
   const [openRouterApiKey, setOpenRouterApiKey] = useState<string>('');
   const [apiKeySaved, setApiKeySaved] = useState<boolean>(false);
   const [allOpenRouterModels, setAllOpenRouterModels] = useState<OpenRouterApiModel[]>([]);
@@ -165,17 +167,24 @@ export default function ChatInterface() {
   const [isFetchingModels, setIsFetchingModels] = useState<boolean>(false);
   const [fetchModelsError, setFetchModelsError] = useState<string | null>(null);
   const [filterTerm, setFilterTerm] = useState<string>("");
-  const [activeTab, setActiveTab] = useState<string>("chat"); // Manage active tab state
+  const [activeTab, setActiveTab] = useState<string>("chat");
 
   // --- Session State ---
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [editingSessionId, setEditingSessionId] = useState<string | null>(null); // Track which session name is being edited
-  const [editingSessionName, setEditingSessionName] = useState<string>(""); // Temp storage for edited name
-  // --- Folder State (Placeholder) ---
-  const [folders, setFolders] = useState<ChatFolder[]>([]); // Add state for folders
-  // const [showFolderModal, setShowFolderModal] = useState(false);
-  // const [sessionToMove, setSessionToMove] = useState<string | null>(null);
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [editingSessionName, setEditingSessionName] = useState<string>("");
+  // --- Folder State ---
+  const [folders, setFolders] = useState<ChatFolder[]>([]);
+  const [showCreateFolderModal, setShowCreateFolderModal] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [showMoveToFolderModal, setShowMoveToFolderModal] = useState(false);
+  const [sessionToMove, setSessionToMove] = useState<string | null>(null);
+  // --- Tag State ---
+  const [editingTagsSessionId, setEditingTagsSessionId] = useState<string | null>(null);
+  const [editingTags, setEditingTags] = useState<string[]>([]);
+  const [newTagInput, setNewTagInput] = useState("");
+  const [filterTags, setFilterTags] = useState<Set<string>>(new Set());
 
 
   // Refs
@@ -183,8 +192,9 @@ export default function ChatInterface() {
   const chatScrollAreaRef = useRef<HTMLDivElement>(null);
   const analyseScrollAreaRef = useRef<HTMLDivElement>(null);
   const settingsScrollAreaRef = useRef<HTMLDivElement>(null);
-  const historyScrollAreaRef = useRef<HTMLDivElement>(null); // Ref for history scroll area
-  const editNameInputRef = useRef<HTMLInputElement>(null); // Ref for the edit name input
+  const historyScrollAreaRef = useRef<HTMLDivElement>(null);
+  const editNameInputRef = useRef<HTMLInputElement>(null);
+  const newTagInputRef = useRef<HTMLInputElement>(null);
 
   // --- Derived State ---
   const activeSession = React.useMemo(() => {
@@ -196,12 +206,10 @@ export default function ChatInterface() {
   }, [activeSession]);
 
   const totalCost = React.useMemo(() => {
-      // Calculate total cost across *all* sessions for the Analyse tab
       return chatSessions.reduce((sum, session) => sum + (session.totalCost ?? 0), 0);
   }, [chatSessions]);
 
   const allAiMessages = React.useMemo(() => {
-      // Flatten messages from all sessions for the Analyse tab
       return chatSessions.flatMap(session =>
           session.messages.filter(m => m.sender === 'ai' && !m.isError)
       );
@@ -221,112 +229,94 @@ export default function ChatInterface() {
   };
 
   // --- Local Storage Interaction ---
-  const saveSessionsToLocalStorage = useCallback((sessions: ChatSession[]) => {
+  const saveToLocalStorage = useCallback((key: string, data: any) => {
     try {
-      localStorage.setItem(CHAT_SESSIONS_STORAGE_KEY, JSON.stringify(sessions));
-      console.log("Saved sessions to localStorage.");
+      localStorage.setItem(key, JSON.stringify(data));
+      console.log(`Saved ${key} to localStorage.`);
     } catch (error) {
-      console.error("Error saving sessions to localStorage:", error);
-      toast({ variant: "destructive", title: "Error Saving History", description: "Could not save chat history." });
+      console.error(`Error saving ${key} to localStorage:`, error);
+      toast({ variant: "destructive", title: `Error Saving ${key}`, description: `Could not save ${key}.` });
     }
   }, [toast]);
 
-  const loadSessionsFromLocalStorage = useCallback((): ChatSession[] => {
+  const loadFromLocalStorage = useCallback(<T>(key: string, defaultValue: T): T => {
     try {
-      const storedSessions = localStorage.getItem(CHAT_SESSIONS_STORAGE_KEY);
-      if (storedSessions) {
-        const parsedSessions: ChatSession[] = JSON.parse(storedSessions);
-        // Basic validation (ensure it's an array and items have 'id')
-        if (Array.isArray(parsedSessions) && parsedSessions.every(s => s && typeof s.id === 'string')) {
-           console.log("Loaded sessions from localStorage.");
-          // Add default fields if missing (backward compatibility)
-          return parsedSessions.map(s => ({
-              ...s,
-              name: s.name || DEFAULT_SESSION_NAME,
-              messages: s.messages || [],
-              createdAt: s.createdAt || Date.now(),
-              lastModified: s.lastModified || Date.now(),
-              totalCost: s.totalCost || 0,
-              folderId: s.folderId || null,
-              isBookmarked: s.isBookmarked || false, // Ensure isBookmarked exists
-          }));
-        }
+      const storedData = localStorage.getItem(key);
+      if (storedData) {
+        const parsedData = JSON.parse(storedData);
+        console.log(`Loaded ${key} from localStorage.`);
+        return parsedData as T;
       }
     } catch (error) {
-      console.error("Error loading sessions from localStorage:", error);
+      console.error(`Error loading ${key} from localStorage:`, error);
+      localStorage.removeItem(key); // Clear corrupted data
     }
-    return []; // Return empty array if nothing found or error
+    return defaultValue;
   }, []);
+
 
   // --- Session Management Functions ---
   const createNewSession = useCallback(() => {
     const newSessionId = `session_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
     const newSession: ChatSession = {
       id: newSessionId,
-      name: DEFAULT_SESSION_NAME, // Start with default name
+      name: DEFAULT_SESSION_NAME,
       messages: [],
       createdAt: Date.now(),
       lastModified: Date.now(),
       totalCost: 0,
       folderId: null,
       isBookmarked: false,
+      tags: [], // Initialize tags
     };
 
     setChatSessions(prevSessions => {
-        const updatedSessions = [newSession, ...prevSessions]; // Add to the beginning
-        saveSessionsToLocalStorage(updatedSessions); // Save immediately
+        const updatedSessions = [newSession, ...prevSessions];
+        saveToLocalStorage(CHAT_SESSIONS_STORAGE_KEY, updatedSessions);
         return updatedSessions;
     });
     setActiveSessionId(newSessionId);
-    localStorage.setItem(ACTIVE_SESSION_ID_STORAGE_KEY, newSessionId); // Save active ID
-    setInput(''); // Clear input for new chat
+    localStorage.setItem(ACTIVE_SESSION_ID_STORAGE_KEY, newSessionId);
+    setInput('');
     setSelectedFile(null);
     setFileDataUri(undefined);
     setError(null);
-    setActiveTab("chat"); // Switch back to chat tab
+    setActiveTab("chat");
     console.log(`Created new session: ${newSessionId}`);
-  }, [saveSessionsToLocalStorage]);
+  }, [saveToLocalStorage]);
 
   const switchSession = useCallback((sessionId: string) => {
-    if (sessionId === activeSessionId) return; // Don't switch if already active
+    if (sessionId === activeSessionId) return;
     const sessionExists = chatSessions.some(s => s.id === sessionId);
     if (sessionExists) {
       setActiveSessionId(sessionId);
-      localStorage.setItem(ACTIVE_SESSION_ID_STORAGE_KEY, sessionId); // Save active ID
-      setInput(''); // Clear input
+      localStorage.setItem(ACTIVE_SESSION_ID_STORAGE_KEY, sessionId);
+      setInput('');
       setSelectedFile(null);
       setFileDataUri(undefined);
       setError(null);
-      setActiveTab("chat"); // Ensure chat tab is active when switching
+      setActiveTab("chat");
       console.log(`Switched to session: ${sessionId}`);
     } else {
       console.warn(`Attempted to switch to non-existent session: ${sessionId}`);
-      // Optionally create a new one if the active one is lost
       const currentActive = localStorage.getItem(ACTIVE_SESSION_ID_STORAGE_KEY);
       if (!currentActive || !chatSessions.some(s => s.id === currentActive)) {
          createNewSession();
       }
     }
-  }, [chatSessions, activeSessionId, createNewSession]); // Include createNewSession dependency
+  }, [chatSessions, activeSessionId, createNewSession]);
 
   const deleteSession = useCallback((sessionIdToDelete: string) => {
     setChatSessions(prevSessions => {
       const updatedSessions = prevSessions.filter(session => session.id !== sessionIdToDelete);
-      saveSessionsToLocalStorage(updatedSessions);
+      saveToLocalStorage(CHAT_SESSIONS_STORAGE_KEY, updatedSessions);
 
-      // If the deleted session was the active one, switch to another or create new
       if (activeSessionId === sessionIdToDelete) {
         let newActiveSessionId: string | null = null;
         if (updatedSessions.length > 0) {
-          // Switch to the first session in the updated list (most recent)
           newActiveSessionId = updatedSessions[0].id;
         } else {
-          // No sessions left, create a new one
-          // Note: This might cause issues if createNewSession runs async before state updates complete
-          // A better approach might be to set activeSessionId to null and let useEffect handle creation.
-          // For simplicity here, we'll attempt to create immediately.
-           // createNewSession(); // Defer creation to useEffect
-          setActiveSessionId(null); // Set to null, let useEffect handle it
+          setActiveSessionId(null);
           localStorage.removeItem(ACTIVE_SESSION_ID_STORAGE_KEY);
         }
 
@@ -334,20 +324,18 @@ export default function ChatInterface() {
            setActiveSessionId(newActiveSessionId);
            localStorage.setItem(ACTIVE_SESSION_ID_STORAGE_KEY, newActiveSessionId);
         }
-
       }
       return updatedSessions;
     });
     toast({ title: "Session Deleted", description: "The chat history has been removed." });
     console.log(`Deleted session: ${sessionIdToDelete}`);
-  }, [activeSessionId, saveSessionsToLocalStorage, toast]);
+  }, [activeSessionId, saveToLocalStorage, toast]);
 
   const startEditingSessionName = useCallback((sessionId: string) => {
       const session = chatSessions.find(s => s.id === sessionId);
       if (session) {
           setEditingSessionId(sessionId);
           setEditingSessionName(session.name);
-          // Focus the input shortly after it's rendered
           setTimeout(() => editNameInputRef.current?.focus(), 50);
       }
   }, [chatSessions]);
@@ -372,20 +360,20 @@ export default function ChatInterface() {
           const updatedSessions = prevSessions.map(session =>
               session.id === sessionId ? { ...session, name: trimmedName, lastModified: Date.now() } : session
           );
-          saveSessionsToLocalStorage(updatedSessions);
+          saveToLocalStorage(CHAT_SESSIONS_STORAGE_KEY, updatedSessions);
           return updatedSessions;
       });
       setEditingSessionId(null);
       setEditingSessionName("");
       toast({ title: "Name Updated", description: "Session name has been saved." });
-  }, [editingSessionName, saveSessionsToLocalStorage, toast]);
+  }, [editingSessionName, saveToLocalStorage, toast]);
 
    const toggleBookmark = useCallback((sessionId: string) => {
        setChatSessions(prevSessions => {
            const updatedSessions = prevSessions.map(session =>
                session.id === sessionId ? { ...session, isBookmarked: !session.isBookmarked, lastModified: Date.now() } : session
            );
-           saveSessionsToLocalStorage(updatedSessions);
+           saveToLocalStorage(CHAT_SESSIONS_STORAGE_KEY, updatedSessions);
            return updatedSessions;
        });
        const session = chatSessions.find(s => s.id === sessionId);
@@ -395,42 +383,126 @@ export default function ChatInterface() {
                description: `Session "${session.name}" ${session.isBookmarked ? 'removed from' : 'added to'} bookmarks.`
            });
        }
-   }, [chatSessions, saveSessionsToLocalStorage, toast]);
+   }, [chatSessions, saveToLocalStorage, toast]);
 
-   // --- Folder Functions (Placeholders - Need UI Implementation) ---
-   const createFolder = useCallback((folderName: string) => {
-       const newFolder: ChatFolder = {
+   // --- Folder Functions ---
+   const handleCreateFolder = useCallback(() => {
+        const trimmedName = newFolderName.trim();
+        if (!trimmedName) {
+             toast({ variant: "destructive", title: "Invalid Name", description: "Folder name cannot be empty." });
+             return;
+        }
+        const newFolder: ChatFolder = {
            id: `folder_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-           name: folderName,
+           name: trimmedName,
            createdAt: Date.now(),
-       };
-       setFolders(prev => {
+        };
+        setFolders(prev => {
            const updated = [...prev, newFolder];
-           // TODO: Save folders to local storage
-           // localStorage.setItem(CHAT_FOLDERS_STORAGE_KEY, JSON.stringify(updated));
+           saveToLocalStorage(CHAT_FOLDERS_STORAGE_KEY, updated);
            return updated;
-       });
-       toast({ title: "Folder Created", description: `Folder "${folderName}" created.`});
-   }, [toast]);
+        });
+        toast({ title: "Folder Created", description: `Folder "${trimmedName}" created.`});
+        setNewFolderName("");
+        setShowCreateFolderModal(false);
+   }, [newFolderName, toast, saveToLocalStorage]);
 
-   const moveSessionToFolder = useCallback((sessionId: string, folderId: string | null) => {
+   const openMoveToFolderModal = useCallback((sessionId: string) => {
+        setSessionToMove(sessionId);
+        setShowMoveToFolderModal(true);
+   }, []);
+
+   const handleMoveSessionToFolder = useCallback((folderId: string | null) => {
+        if (!sessionToMove) return;
+
         setChatSessions(prevSessions => {
             const updatedSessions = prevSessions.map(session =>
-                session.id === sessionId ? { ...session, folderId: folderId, lastModified: Date.now() } : session
+                session.id === sessionToMove ? { ...session, folderId: folderId, lastModified: Date.now() } : session
             );
-            saveSessionsToLocalStorage(updatedSessions);
+            saveToLocalStorage(CHAT_SESSIONS_STORAGE_KEY, updatedSessions);
             return updatedSessions;
         });
-        const session = chatSessions.find(s => s.id === sessionId);
+        const session = chatSessions.find(s => s.id === sessionToMove);
         const folder = folders.find(f => f.id === folderId);
         toast({
              title: "Session Moved",
              description: `Session "${session?.name}" moved ${folderId ? `to folder "${folder?.name}"` : 'out of folder'}.`
         });
-   }, [chatSessions, folders, saveSessionsToLocalStorage, toast]);
+        setShowMoveToFolderModal(false);
+        setSessionToMove(null);
+   }, [sessionToMove, chatSessions, folders, saveToLocalStorage, toast]);
+
+    // --- Tag Functions ---
+    const startEditingTags = useCallback((sessionId: string) => {
+        const session = chatSessions.find(s => s.id === sessionId);
+        if (session) {
+            setEditingTagsSessionId(sessionId);
+            setEditingTags(session.tags || []);
+            setNewTagInput("");
+             // Focus input after modal renders
+            setTimeout(() => newTagInputRef.current?.focus(), 50);
+        }
+    }, [chatSessions]);
+
+    const cancelEditingTags = useCallback(() => {
+        setEditingTagsSessionId(null);
+        setEditingTags([]);
+        setNewTagInput("");
+    }, []);
+
+    const handleAddTag = useCallback(() => {
+        const tagToAdd = newTagInput.trim().toLowerCase();
+        if (tagToAdd && !editingTags.includes(tagToAdd) && tagToAdd.length <= 20) { // Add length limit if needed
+            setEditingTags(prev => [...prev, tagToAdd]);
+            setNewTagInput("");
+        } else if (editingTags.includes(tagToAdd)) {
+            toast({ variant: "default", title: "Tag Exists", description: "This tag is already added." });
+        } else if (tagToAdd.length > 20) {
+             toast({ variant: "destructive", title: "Tag Too Long", description: "Tags cannot exceed 20 characters." });
+        }
+    }, [newTagInput, editingTags, toast]);
+
+    const handleRemoveTag = useCallback((tagToRemove: string) => {
+        setEditingTags(prev => prev.filter(tag => tag !== tagToRemove));
+    }, []);
+
+    const handleSaveTags = useCallback(() => {
+        if (!editingTagsSessionId) return;
+        setChatSessions(prevSessions => {
+            const updatedSessions = prevSessions.map(session =>
+                session.id === editingTagsSessionId ? { ...session, tags: editingTags, lastModified: Date.now() } : session
+            );
+            saveToLocalStorage(CHAT_SESSIONS_STORAGE_KEY, updatedSessions);
+            return updatedSessions;
+        });
+        toast({ title: "Tags Updated", description: "Session tags have been saved." });
+        cancelEditingTags(); // Close the modal/editing state
+    }, [editingTagsSessionId, editingTags, saveToLocalStorage, toast, cancelEditingTags]);
+
+    const handleTagFilterChange = useCallback((tag: string) => {
+         setFilterTags(prev => {
+             const newSet = new Set(prev);
+             if (newSet.has(tag)) { newSet.delete(tag); }
+             else { newSet.add(tag); }
+             return newSet;
+         });
+     }, []);
+
+    const clearTagFilters = useCallback(() => {
+         setFilterTags(new Set());
+     }, []);
+
+    const allAvailableTags = React.useMemo(() => {
+        const tags = new Set<string>();
+        chatSessions.forEach(session => {
+            (session.tags || []).forEach(tag => tags.add(tag));
+        });
+        return Array.from(tags).sort();
+    }, [chatSessions]);
 
 
-  // --- Model Fetching & Management (Keep as before) ---
+
+  // --- Model Fetching & Management ---
   const calculateActiveModels = useCallback((selectedIds: Set<string>, allFetchedModels: OpenRouterApiModel[]): AIModelInfo[] => {
       const selectedOpenRouterModels = allFetchedModels
         .filter(model => selectedIds.has(model.id))
@@ -440,107 +512,160 @@ export default function ChatInterface() {
           provider: 'openrouter' as const,
           context_length: model.context_length,
         }));
-      const newActiveModels = [...DEFAULT_GOOGLE_MODELS, ...selectedOpenRouterModels];
+      // Limit the number of displayed models from OpenRouter
+      const limitedOpenRouterModels = selectedOpenRouterModels.slice(0, MAX_SELECTABLE_OPENROUTER_MODELS);
+      const newActiveModels = [...DEFAULT_GOOGLE_MODELS, ...limitedOpenRouterModels];
       return newActiveModels;
   }, []);
 
   const fetchOpenRouterModels = useCallback(async (apiKey: string) => {
-    if (!apiKey) { setAllOpenRouterModels([]); setFetchModelsError("API Key is required."); return; }
-    setIsFetchingModels(true); setFetchModelsError(null);
+    if (!apiKey) {
+        setAllOpenRouterModels([]);
+        setFetchModelsError("API Key is required to fetch models.");
+        setActiveModels(DEFAULT_GOOGLE_MODELS); // Reset to default if key removed
+        return;
+    }
+    setIsFetchingModels(true);
+    setFetchModelsError(null);
     try {
       const response = await fetch("https://openrouter.ai/api/v1/models", { headers: { "Authorization": `Bearer ${apiKey}` } });
-      if (!response.ok) { /* Error handling... */ throw new Error(`Failed: ${response.status}`); }
+      if (!response.ok) {
+          let errorBody = await response.text();
+           let errorMessage = `Failed to fetch models: ${response.status}`;
+           try { const errorJson = JSON.parse(errorBody); errorMessage = errorJson?.error?.message || errorBody; } catch {}
+           console.error("OpenRouter API Error:", errorMessage);
+           throw new Error(errorMessage);
+       }
       const data = await response.json();
-      if (!data || !Array.isArray(data.data)) { throw new Error("Invalid data structure."); }
+      if (!data || !Array.isArray(data.data)) { throw new Error("Invalid data structure received from OpenRouter."); }
       const fetchedModels: OpenRouterApiModel[] = data.data;
       setAllOpenRouterModels(fetchedModels);
-    } catch (error) { /* Error handling... */ setFetchModelsError(`Error: ${error instanceof Error ? error.message : 'Unknown'}`); setAllOpenRouterModels([]); }
-    finally { setIsFetchingModels(false); }
-  }, []);
+       // Re-calculate active models based on fetched models and *existing* selection
+       setSelectedOpenRouterModelIds(prevSelectedIds => {
+           const validSelectedIds = new Set<string>();
+           fetchedModels.forEach(model => {
+               if (prevSelectedIds.has(model.id)) {
+                   validSelectedIds.add(model.id);
+               }
+           });
+            // Ensure the selection doesn't exceed the limit after refresh
+           const limitedValidSelectedIds = new Set(Array.from(validSelectedIds).slice(0, MAX_SELECTABLE_OPENROUTER_MODELS));
+           if (limitedValidSelectedIds.size < validSelectedIds.size) {
+                toast({ title: "Model Limit Reached", description: `Selection trimmed to ${MAX_SELECTABLE_OPENROUTER_MODELS} models after refresh.` });
+           }
+            setActiveModels(calculateActiveModels(limitedValidSelectedIds, fetchedModels));
+            // Save the potentially trimmed selection
+           localStorage.setItem(SELECTED_OPENROUTER_MODELS_KEY, JSON.stringify(Array.from(limitedValidSelectedIds)));
+           return limitedValidSelectedIds;
+       });
+
+    } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error fetching models.';
+        console.error("Error fetching OpenRouter models:", error);
+        setFetchModelsError(`Error: ${message}`);
+        setAllOpenRouterModels([]);
+        setActiveModels(DEFAULT_GOOGLE_MODELS); // Reset on error
+    } finally {
+      setIsFetchingModels(false);
+    }
+  }, [toast, calculateActiveModels]);
 
 
   // --- Effects ---
 
-  // Effect 1: Load sessions, API key, selected models on initial mount
+  // Effect 1: Load initial data from localStorage
   useEffect(() => {
-    const loadedSessions = loadSessionsFromLocalStorage();
+    const loadedSessions = loadFromLocalStorage<ChatSession[]>(CHAT_SESSIONS_STORAGE_KEY, []).map(s => ({
+        ...s,
+        tags: s.tags || [], // Ensure tags array exists
+        isBookmarked: s.isBookmarked || false,
+        folderId: s.folderId || null,
+        totalCost: s.totalCost || 0,
+        createdAt: s.createdAt || Date.now(),
+        lastModified: s.lastModified || Date.now(),
+        messages: s.messages || [],
+        name: s.name || DEFAULT_SESSION_NAME,
+    }));
     setChatSessions(loadedSessions);
 
-    const storedApiKey = localStorage.getItem(OPENROUTER_API_KEY_STORAGE_KEY);
-    const storedSelectedModelIdsJson = localStorage.getItem(SELECTED_OPENROUTER_MODELS_KEY);
-    let initialSelectedIds = new Set<string>();
+    const storedApiKey = loadFromLocalStorage<string>(OPENROUTER_API_KEY_STORAGE_KEY, '');
+    const storedSelectedModelIds = loadFromLocalStorage<string[]>(SELECTED_OPENROUTER_MODELS_KEY, []);
+    const initialSelectedIds = new Set(storedSelectedModelIds.slice(0, MAX_SELECTABLE_OPENROUTER_MODELS)); // Respect limit on load
 
-    if (storedApiKey) {
-      setOpenRouterApiKey(storedApiKey);
-      fetchOpenRouterModels(storedApiKey); // Fetch models
-    }
-
-    if (storedSelectedModelIdsJson) {
-      try {
-        const parsedIds = JSON.parse(storedSelectedModelIdsJson);
-        if (Array.isArray(parsedIds)) { initialSelectedIds = new Set<string>(parsedIds); }
-        else { localStorage.removeItem(SELECTED_OPENROUTER_MODELS_KEY); }
-      } catch (e) { localStorage.removeItem(SELECTED_OPENROUTER_MODELS_KEY); }
-    }
+    setOpenRouterApiKey(storedApiKey);
     setSelectedOpenRouterModelIds(initialSelectedIds);
 
-     // Determine initial active session
+    if (storedApiKey) {
+      fetchOpenRouterModels(storedApiKey); // Fetch models if API key exists
+    } else {
+      setActiveModels(calculateActiveModels(initialSelectedIds, [])); // Calculate with defaults if no key
+    }
+
+    const loadedFolders = loadFromLocalStorage<ChatFolder[]>(CHAT_FOLDERS_STORAGE_KEY, []);
+    setFolders(loadedFolders);
+
+    // Determine initial active session
     const storedActiveId = localStorage.getItem(ACTIVE_SESSION_ID_STORAGE_KEY);
     let activeIdToSet = null;
-
     if (storedActiveId && loadedSessions.some(s => s.id === storedActiveId)) {
         activeIdToSet = storedActiveId;
     } else if (loadedSessions.length > 0) {
-        activeIdToSet = loadedSessions[0].id; // Default to the first (most recent)
+        activeIdToSet = loadedSessions[0].id; // Default to the most recent
     }
 
     if (activeIdToSet) {
         setActiveSessionId(activeIdToSet);
-        if (activeIdToSet !== storedActiveId) { // Update storage if we defaulted
+        if (activeIdToSet !== storedActiveId) {
             localStorage.setItem(ACTIVE_SESSION_ID_STORAGE_KEY, activeIdToSet);
         }
     } else {
-        // No sessions loaded and no valid stored ID, create a new one
+        // No sessions loaded, create a new one
         createNewSession();
     }
+  }, [loadFromLocalStorage, fetchOpenRouterModels, createNewSession, calculateActiveModels]);
 
-    // Initial active models calculation happens in Effect 2
-    // TODO: Load folders from local storage here as well
-    // const storedFolders = localStorage.getItem(CHAT_FOLDERS_STORAGE_KEY);
-    // if (storedFolders) { setFolders(JSON.parse(storedFolders)); }
 
-  }, [loadSessionsFromLocalStorage, fetchOpenRouterModels, createNewSession]);
-
-   // Effect 1.5: Ensure an active session exists if none is set after initial load/delete
+   // Effect 1.5: Ensure an active session exists if needed
    useEffect(() => {
       if (!activeSessionId && chatSessions.length > 0) {
-          // If activeSessionId became null (e.g., after delete), and there are still sessions, select the first one
           const firstSessionId = chatSessions[0].id;
           setActiveSessionId(firstSessionId);
           localStorage.setItem(ACTIVE_SESSION_ID_STORAGE_KEY, firstSessionId);
           console.log("Active session was null, defaulting to first available session:", firstSessionId);
       } else if (!activeSessionId && chatSessions.length === 0 && activeTab !== 'settings') {
-          // If no sessions exist at all (and not in settings), create a new one
-          // This handles the case after deleting the very last session.
           console.log("No active session and no sessions exist, creating a new one.");
           createNewSession();
       }
-   }, [activeSessionId, chatSessions, createNewSession, activeTab]); // Depend on activeTab to avoid loop if settings is open
+   }, [activeSessionId, chatSessions, createNewSession, activeTab]);
 
-  // Effect 2: Update `activeModels` when selection or fetched models change
+  // Effect 2: Update `activeModels` whenever selected IDs or fetched models change
   useEffect(() => {
-      setActiveModels(calculateActiveModels(selectedOpenRouterModelIds, allOpenRouterModels));
+      // Ensure selectedOpenRouterModelIds respects the limit before calculating
+      const limitedSelection = new Set(Array.from(selectedOpenRouterModelIds).slice(0, MAX_SELECTABLE_OPENROUTER_MODELS));
+      if (limitedSelection.size < selectedOpenRouterModelIds.size) {
+          console.warn(`Selected models exceed limit (${MAX_SELECTABLE_OPENROUTER_MODELS}), trimming.`);
+          setSelectedOpenRouterModelIds(limitedSelection); // Update state if trimmed
+      }
+      setActiveModels(calculateActiveModels(limitedSelection, allOpenRouterModels));
   }, [selectedOpenRouterModelIds, allOpenRouterModels, calculateActiveModels]);
 
-  // Effect 3: Reset `selectedModel` if no longer active
+
+  // Effect 3: Reset `selectedModel` if it's no longer in `activeModels`
   useEffect(() => {
       if (!activeModels.some(m => m.id === selectedModel.id)) {
           const defaultModel = activeModels.find(m => m.id === DEFAULT_GOOGLE_MODELS[0].id) || activeModels[0];
-          if (defaultModel) { setSelectedModel(defaultModel); }
+          if (defaultModel) {
+              setSelectedModel(defaultModel);
+              console.log("Selected model reset to:", defaultModel.name);
+          } else {
+              console.warn("No active models available to select.");
+              // Handle case where activeModels might be empty (e.g., API key removed, no defaults)
+          }
       }
   }, [activeModels, selectedModel.id]);
 
-  // Effect 4: Scroll chat to bottom when messages in the *active* session change
+
+  // Effect 4: Scroll chat to bottom
   useEffect(() => {
     if (chatScrollAreaRef.current && activeTab === 'chat') {
       chatScrollAreaRef.current.scrollTo({
@@ -548,7 +673,7 @@ export default function ChatInterface() {
         behavior: 'smooth',
       });
     }
-  }, [messages, activeTab]); // Depend on 'messages' derived from activeSession
+  }, [messages, activeTab]);
 
 
   // --- Event Handlers ---
@@ -557,7 +682,7 @@ export default function ChatInterface() {
     localStorage.setItem(OPENROUTER_API_KEY_STORAGE_KEY, openRouterApiKey);
     setApiKeySaved(true);
     toast({ title: "API Key Saved", description: "OpenRouter API key saved." });
-    fetchOpenRouterModels(openRouterApiKey);
+    fetchOpenRouterModels(openRouterApiKey); // Fetch models with the new key
     setTimeout(() => setApiKeySaved(false), 2000);
   };
 
@@ -570,7 +695,21 @@ export default function ChatInterface() {
       if (typeof checked === 'boolean') {
          setSelectedOpenRouterModelIds(prev => {
              const newSet = new Set(prev);
-             if (checked) { newSet.add(modelId); } else { newSet.delete(modelId); }
+             if (checked) {
+                 if (newSet.size < MAX_SELECTABLE_OPENROUTER_MODELS) {
+                     newSet.add(modelId);
+                 } else {
+                     toast({
+                         variant: "destructive",
+                         title: "Model Limit Reached",
+                         description: `You can only select up to ${MAX_SELECTABLE_OPENROUTER_MODELS} OpenRouter models.`
+                     });
+                     // Don't add the model if the limit is reached
+                     return prev; // Return previous state
+                 }
+             } else {
+                 newSet.delete(modelId);
+             }
              return newSet;
          });
       }
@@ -579,7 +718,20 @@ export default function ChatInterface() {
    const handleSelectAllFilteredModels = () => {
      setSelectedOpenRouterModelIds(prev => {
        const newSet = new Set(prev);
-       filteredModels.forEach(model => newSet.add(model.id));
+       let addedCount = 0;
+       filteredModels.forEach(model => {
+            if (newSet.size < MAX_SELECTABLE_OPENROUTER_MODELS && !newSet.has(model.id)) {
+                 newSet.add(model.id);
+                 addedCount++;
+            }
+       });
+        if (addedCount < filteredModels.length && newSet.size === MAX_SELECTABLE_OPENROUTER_MODELS) {
+            toast({
+                 variant: "default", // Use default variant for info
+                 title: "Model Limit Reached",
+                 description: `Added ${addedCount} models. Reached the limit of ${MAX_SELECTABLE_OPENROUTER_MODELS}.`
+             });
+        }
        return newSet;
      });
    };
@@ -593,9 +745,12 @@ export default function ChatInterface() {
     };
 
   const handleImportSelectedModels = () => {
-      const selectedIdsArray = Array.from(selectedOpenRouterModelIds);
-      localStorage.setItem(SELECTED_OPENROUTER_MODELS_KEY, JSON.stringify(selectedIdsArray));
-      toast({ title: "Models Selection Saved", description: `${selectedOpenRouterModelIds.size} models available in chat.` });
+      // Double-check limit before saving (although handleModelSelectionChange should prevent exceeding it)
+       const selectedIdsArray = Array.from(selectedOpenRouterModelIds).slice(0, MAX_SELECTABLE_OPENROUTER_MODELS);
+      saveToLocalStorage(SELECTED_OPENROUTER_MODELS_KEY, selectedIdsArray);
+      toast({ title: "Models Selection Saved", description: `${selectedIdsArray.length} models available in chat.` });
+      // Recalculate active models based on the final saved selection
+      setActiveModels(calculateActiveModels(new Set(selectedIdsArray), allOpenRouterModels));
    };
 
    const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -621,6 +776,16 @@ export default function ChatInterface() {
        }
    };
 
+    const handleNewTagKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+        if (event.key === 'Enter') {
+             event.preventDefault(); // Prevent form submission if inside a form
+             handleAddTag();
+        } else if (event.key === 'Escape') {
+            setNewTagInput(""); // Clear input on escape
+        }
+    };
+
+
   const handleSend = useCallback(async () => {
     if (!activeSessionId) {
         console.error("No active session to send message to.");
@@ -641,29 +806,26 @@ export default function ChatInterface() {
       ...(userMessageFile && { file: userMessageFile }),
     };
 
-    // --- Update State & Local Storage ---
     let isFirstMessage = false;
     setChatSessions(prevSessions => {
         const updatedSessions = prevSessions.map(session => {
             if (session.id === activeSessionId) {
-                isFirstMessage = session.messages.length === 0; // Check if it's the first message BEFORE adding it
+                isFirstMessage = session.messages.length === 0;
                 return {
                     ...session,
                     messages: [...session.messages, userMessage],
                     lastModified: timestamp,
-                     // Keep existing name unless it's the default AND this is the first message
                     name: (session.name === DEFAULT_SESSION_NAME && isFirstMessage)
                           ? generateSessionName(userMessageText)
                           : session.name,
-                    modelId: selectedModel.id, // Store last used model for the session
+                    modelId: selectedModel.id, // Store last used model
                 };
             }
             return session;
         });
-        saveSessionsToLocalStorage(updatedSessions); // Save after adding user message
+        saveToLocalStorage(CHAT_SESSIONS_STORAGE_KEY, updatedSessions);
         return updatedSessions;
     });
-    // ---------------------------------
 
     setInput('');
     setSelectedFile(null);
@@ -685,7 +847,6 @@ export default function ChatInterface() {
         timestamp: Date.now(), modelId: selectedModel.id,
       };
 
-      // --- Update State & Local Storage ---
       setChatSessions(prevSessions => {
           const updatedSessions = prevSessions.map(session => {
               if (session.id === activeSessionId) {
@@ -693,15 +854,14 @@ export default function ChatInterface() {
                       ...session,
                       messages: [...session.messages, aiMessage],
                       lastModified: Date.now(),
-                      totalCost: (session.totalCost ?? 0) + calculatedCost, // Update total cost
+                      totalCost: (session.totalCost ?? 0) + calculatedCost,
                   };
               }
               return session;
           });
-          saveSessionsToLocalStorage(updatedSessions); // Save after adding AI message
+          saveToLocalStorage(CHAT_SESSIONS_STORAGE_KEY, updatedSessions);
           return updatedSessions;
       });
-      // ---------------------------------
 
     } catch (err) {
       console.error("Error calling AI:", err);
@@ -713,28 +873,25 @@ export default function ChatInterface() {
            timestamp: errorTimestamp, modelId: selectedModel.id, isError: true
       };
 
-       // --- Update State & Local Storage for Error ---
        setChatSessions(prevSessions => {
            const updatedSessions = prevSessions.map(session => {
                if (session.id === activeSessionId) {
                    return {
                        ...session,
-                       messages: [...session.messages, errorAiMessage], // Add error message
+                       messages: [...session.messages, errorAiMessage],
                        lastModified: errorTimestamp,
-                       // Don't update cost on error
                    };
                }
                return session;
            });
-           saveSessionsToLocalStorage(updatedSessions); // Save after adding error message
+           saveToLocalStorage(CHAT_SESSIONS_STORAGE_KEY, updatedSessions);
            return updatedSessions;
        });
-       // ------------------------------------------
        toast({ variant: "destructive", title: "AI Error", description: errorMessage });
     } finally {
       setIsSending(false);
     }
-  }, [activeSessionId, input, selectedFile, fileDataUri, selectedModel, openRouterApiKey, toast, chatSessions, saveSessionsToLocalStorage]); // Added chatSessions and saveSessionsToLocalStorage
+  }, [activeSessionId, input, selectedFile, fileDataUri, selectedModel, openRouterApiKey, toast, chatSessions, saveToLocalStorage]);
 
   const handleKeyPress = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); handleSend(); }
@@ -754,36 +911,38 @@ export default function ChatInterface() {
       );
   }, [allOpenRouterModels, filterTerm]);
 
-   // Sort sessions for the History tab (most recent first, bookmarked first within that)
-   const sortedSessions = React.useMemo(() => {
-      // TODO: Implement folder filtering/grouping here
-      return [...chatSessions].sort((a, b) => {
-         // Sort bookmarked items first
-         if (a.isBookmarked && !b.isBookmarked) return -1;
-         if (!a.isBookmarked && b.isBookmarked) return 1;
-         // Then sort by last modified date (newest first)
-         return b.lastModified - a.lastModified;
-     });
-   }, [chatSessions]); // Add folders dependency when implemented
+   // Filter and Sort sessions for the History tab
+   const filteredAndSortedSessions = React.useMemo(() => {
+       // TODO: Implement folder filtering here when UI is ready
+       // Filter by selected tags (if any)
+       const tagFilteredSessions = filterTags.size === 0
+           ? chatSessions
+           : chatSessions.filter(session =>
+               (session.tags || []).some(tag => filterTags.has(tag))
+           );
+
+       // Sort: Bookmarked first, then by last modified date (newest first)
+       return [...tagFilteredSessions].sort((a, b) => {
+          if (a.isBookmarked && !b.isBookmarked) return -1;
+          if (!a.isBookmarked && b.isBookmarked) return 1;
+          return b.lastModified - a.lastModified;
+       });
+    }, [chatSessions, filterTags]); // Add folders dependency when implemented
 
 
   // --- Render ---
   return (
     <Card className="w-full max-w-4xl h-[80vh] flex flex-col shadow-lg rounded-lg">
-       {/* Add a check for activeSession existence before rendering Tabs */}
-      {!activeSession && chatSessions.length > 0 && (
+       {!activeSession && chatSessions.length > 0 && (
         <div className="flex-1 flex items-center justify-center p-4">
           <p className="text-muted-foreground">Loading chat history...</p>
-          {/* Optional: Add a spinner */}
         </div>
       )}
-       {/* Only render Tabs when there's an active session or no sessions at all (initial state) */}
       {(activeSession || chatSessions.length === 0) && (
         <Tabs value={activeTab} onValueChange={setActiveTab} className="flex flex-col h-full">
           <CardHeader className="border-b flex flex-row justify-between items-center p-4 gap-4 flex-wrap">
             <div className="flex items-center gap-2">
                  <CardTitle className="text-lg font-semibold text-primary whitespace-nowrap">AI Assistant</CardTitle>
-                 {/* Add New Chat Button */}
                  <TooltipProvider delayDuration={100}>
                     <Tooltip>
                         <TooltipTrigger asChild>
@@ -803,7 +962,7 @@ export default function ChatInterface() {
                      <Button variant="outline" className="w-full md:w-auto justify-between min-w-[200px]">
                        <BrainCircuit className="mr-2 h-4 w-4" />
                         <span className="truncate flex-1 text-left">
-                          {activeModels.length > 0 ? (selectedModel?.name ?? "Select Model") : "Loading..."}
+                          {activeModels.length > 0 ? (selectedModel?.name ?? "Select Model") : "Loading/Setup..."}
                          </span>
                        <ChevronDown className="ml-2 h-4 w-4 opacity-50" />
                      </Button>
@@ -817,12 +976,10 @@ export default function ChatInterface() {
                            {model.name} {model.provider === 'openrouter' && <Badge variant="secondary" className="ml-auto text-xs">OpenRouter</Badge>}
                          </DropdownMenuItem>
                        ))
-                      ) : ( <DropdownMenuItem disabled>{isFetchingModels ? "Loading..." : "No models. Check Settings."}</DropdownMenuItem> )}
+                      ) : ( <DropdownMenuItem disabled>{isFetchingModels ? "Loading..." : "No models selected/available. Check Settings."}</DropdownMenuItem> )}
                    </DropdownMenuContent>
                  </DropdownMenu>
 
-
-             {/* Main Tabs */}
              <TabsList className="grid grid-cols-4 w-full md:w-[400px] shrink-0">
               <TabsTrigger value="chat">Chat</TabsTrigger>
               <TabsTrigger value="history">History</TabsTrigger>
@@ -849,6 +1006,14 @@ export default function ChatInterface() {
                             </Tooltip>
                          </TooltipProvider>
                       )}
+                       {/* Display Tags for AI message */}
+                       {message.sender === 'ai' && !message.isError && activeSession?.tags && activeSession.tags.length > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-1">
+                                {activeSession.tags.map(tag => (
+                                    <Badge key={tag} variant="outline" className="text-xs">{tag}</Badge>
+                                ))}
+                            </div>
+                       )}
                     </div>
                      {message.sender === 'user' && (<Avatar className="h-8 w-8 border shrink-0"><AvatarFallback><User size={16} /></AvatarFallback></Avatar>)}
                   </div>
@@ -868,39 +1033,57 @@ export default function ChatInterface() {
           {/* History Tab */}
            <TabsContent value="history" className="flex-1 overflow-hidden p-0 m-0 data-[state=inactive]:hidden">
              <div className="h-full flex flex-col">
-                 <div className="p-4 border-b flex justify-between items-center">
-                    <h3 className="text-lg font-semibold text-primary">Chat History</h3>
-                    {/* Placeholder for folder actions */}
-                    {/* <Button size="sm" variant="outline" onClick={() => alert('Create Folder clicked!')}>
-                        <FolderPlus className="mr-2 h-4 w-4" /> Create Folder
-                    </Button> */}
-                     <Button size="sm" onClick={createNewSession}>
-                        <PlusCircle className="mr-2 h-4 w-4" /> New Chat
-                    </Button>
+                 <div className="p-4 border-b flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                    <div className="flex items-center gap-3 flex-wrap">
+                        <h3 className="text-lg font-semibold text-primary">Chat History</h3>
+                        <Button size="sm" variant="outline" onClick={() => setShowCreateFolderModal(true)}>
+                            <FolderPlus className="mr-2 h-4 w-4" /> Create Folder
+                        </Button>
+                        <Button size="sm" onClick={createNewSession}>
+                            <PlusCircle className="mr-2 h-4 w-4" /> New Chat
+                        </Button>
+                    </div>
+                    {/* Tag Filter Section */}
+                     {allAvailableTags.length > 0 && (
+                       <div className="flex items-center gap-2 flex-wrap">
+                           <Label className="text-sm font-medium shrink-0">Filter by Tags:</Label>
+                           <div className="flex gap-1 flex-wrap">
+                               {allAvailableTags.map(tag => (
+                                   <Badge
+                                       key={tag}
+                                       variant={filterTags.has(tag) ? "default" : "secondary"}
+                                       onClick={() => handleTagFilterChange(tag)}
+                                       className="cursor-pointer text-xs"
+                                   >
+                                       {tag}
+                                   </Badge>
+                               ))}
+                           </div>
+                            {filterTags.size > 0 && (
+                                <Button variant="ghost" size="sm" onClick={clearTagFilters} className="text-xs h-auto p-1 text-muted-foreground">Clear</Button>
+                            )}
+                       </div>
+                     )}
                  </div>
                   <ScrollArea className="flex-1 p-4" ref={historyScrollAreaRef}>
-                      {sortedSessions.length > 0 ? (
+                      {filteredAndSortedSessions.length > 0 ? (
                           <ul className="space-y-2">
-                              {sortedSessions.map((session) => (
+                              {/* TODO: Group by folder */}
+                              {filteredAndSortedSessions.map((session) => (
                                   <li
                                       key={session.id}
                                       className={cn(
                                           "p-3 rounded-md border flex items-center justify-between gap-2 cursor-pointer transition-colors hover:bg-muted/50",
                                           session.id === activeSessionId && "bg-accent/20 border-accent"
                                       )}
-                                      onClick={() => switchSession(session.id)} // Make the whole item clickable to switch
+                                      onClick={() => switchSession(session.id)}
                                   >
                                      <div className="flex-1 min-w-0 flex items-center gap-2">
                                          {/* Bookmark Icon */}
                                          <TooltipProvider delayDuration={100}>
                                              <Tooltip>
                                                  <TooltipTrigger asChild>
-                                                     <Button
-                                                         variant="ghost"
-                                                         size="icon"
-                                                         className={cn("h-7 w-7 shrink-0 text-muted-foreground hover:text-yellow-500", session.isBookmarked && "text-yellow-500 hover:text-yellow-600")}
-                                                         onClick={(e) => { e.stopPropagation(); toggleBookmark(session.id); }}
-                                                     >
+                                                     <Button variant="ghost" size="icon" className={cn("h-7 w-7 shrink-0 text-muted-foreground hover:text-yellow-500", session.isBookmarked && "text-yellow-500 hover:text-yellow-600")} onClick={(e) => { e.stopPropagation(); toggleBookmark(session.id); }}>
                                                          <Bookmark size={14} fill={session.isBookmarked ? 'currentColor' : 'none'} />
                                                          <span className="sr-only">{session.isBookmarked ? 'Remove Bookmark' : 'Add Bookmark'}</span>
                                                      </Button>
@@ -908,116 +1091,167 @@ export default function ChatInterface() {
                                                  <TooltipContent side="top"><p>{session.isBookmarked ? 'Remove Bookmark' : 'Add Bookmark'}</p></TooltipContent>
                                              </Tooltip>
                                          </TooltipProvider>
-                                          {/* Session Name and Info */}
-                                         <div className="flex-1 min-w-0" onClick={() => switchSession(session.id)}>
+
+                                         {/* Session Info */}
+                                         <div className="flex-1 min-w-0">
                                              {editingSessionId === session.id ? (
                                                  <div className="flex items-center gap-2">
-                                                     <Input
-                                                         ref={editNameInputRef}
-                                                         type="text"
-                                                         value={editingSessionName}
-                                                         onClick={(e) => e.stopPropagation()} // Prevent li click
-                                                         onChange={(e) => setEditingSessionName(e.target.value)}
-                                                         onKeyDown={(e) => handleEditNameKeyDown(e, session.id)}
-                                                         onBlur={() => saveEditedSessionName(session.id)} // Save on blur
-                                                         className="h-8 text-sm flex-1"
-                                                         maxLength={MAX_SESSION_NAME_LENGTH}
-                                                     />
+                                                     <Input ref={editNameInputRef} type="text" value={editingSessionName} onClick={(e) => e.stopPropagation()} onChange={(e) => setEditingSessionName(e.target.value)} onKeyDown={(e) => handleEditNameKeyDown(e, session.id)} onBlur={() => saveEditedSessionName(session.id)} className="h-8 text-sm flex-1" maxLength={MAX_SESSION_NAME_LENGTH}/>
                                                      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={(e) => { e.stopPropagation(); saveEditedSessionName(session.id); }}> <CheckCircle size={16} className="text-green-600" /> </Button>
                                                      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={(e) => { e.stopPropagation(); cancelEditingSessionName(); }}> <X size={16} /> </Button>
                                                  </div>
                                              ) : (
-                                                  <p className="text-sm font-medium truncate" title={session.name}>
-                                                     {session.name || DEFAULT_SESSION_NAME}
-                                                 </p>
+                                                 <p className="text-sm font-medium truncate" title={session.name}>{session.name || DEFAULT_SESSION_NAME}</p>
                                              )}
                                              <p className="text-xs text-muted-foreground mt-1">
-                                                 {session.messages.length} message{session.messages.length !== 1 ? 's' : ''} - Last activity: {new Date(session.lastModified).toLocaleString()}
-                                                 {/* {session.folderId && <Badge variant="outline" className="ml-2 text-xs">{folders.find(f => f.id === session.folderId)?.name || 'Folder'}</Badge>} */}
+                                                 {session.messages.length} message{session.messages.length !== 1 ? 's' : ''} - {new Date(session.lastModified).toLocaleString()}
+                                                 {session.folderId && <Badge variant="outline" className="ml-2 text-xs">{folders.find(f => f.id === session.folderId)?.name || 'Folder'}</Badge>}
                                              </p>
+                                             {/* Display Tags */}
+                                             {session.tags && session.tags.length > 0 && (
+                                                <div className="mt-1 flex flex-wrap gap-1">
+                                                    {session.tags.map(tag => (
+                                                        <Badge key={tag} variant="secondary" className="text-xs">{tag}</Badge>
+                                                    ))}
+                                                </div>
+                                             )}
                                          </div>
                                      </div>
+
+                                     {/* Action Buttons */}
                                       <div className="flex items-center gap-1 shrink-0">
-                                         {/* Edit Button */}
+                                         {/* Edit Name */}
                                         {!editingSessionId && (
                                          <TooltipProvider delayDuration={100}>
-                                          <Tooltip>
-                                             <TooltipTrigger asChild>
-                                                  <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={(e) => { e.stopPropagation(); startEditingSessionName(session.id); }}>
-                                                      <Edit2 size={14} />
-                                                       <span className="sr-only">Rename</span>
-                                                  </Button>
-                                               </TooltipTrigger>
-                                               <TooltipContent side="top"><p>Rename</p></TooltipContent>
-                                            </Tooltip>
+                                          <Tooltip><TooltipTrigger asChild>
+                                            <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={(e) => { e.stopPropagation(); startEditingSessionName(session.id); }}><Edit2 size={14} /><span className="sr-only">Rename</span></Button>
+                                           </TooltipTrigger><TooltipContent side="top"><p>Rename</p></TooltipContent></Tooltip>
                                           </TooltipProvider>
                                         )}
-                                         {/* Delete Button */}
+                                         {/* Delete Session */}
                                          <AlertDialog>
                                             <AlertDialogTrigger asChild>
-                                              <TooltipProvider delayDuration={100}>
-                                                <Tooltip>
-                                                 <TooltipTrigger asChild>
-                                                   <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={(e) => e.stopPropagation()}>
-                                                      <Trash2 size={14} />
-                                                      <span className="sr-only">Delete</span>
-                                                    </Button>
-                                                   </TooltipTrigger>
-                                                   <TooltipContent side="top"><p>Delete</p></TooltipContent>
-                                                </Tooltip>
-                                              </TooltipProvider>
+                                              <TooltipProvider delayDuration={100}><Tooltip><TooltipTrigger asChild>
+                                                <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={(e) => e.stopPropagation()}><Trash2 size={14} /><span className="sr-only">Delete</span></Button>
+                                              </TooltipTrigger><TooltipContent side="top"><p>Delete</p></TooltipContent></Tooltip></TooltipProvider>
                                              </AlertDialogTrigger>
-                                            <AlertDialogContent onClick={(e) => e.stopPropagation()}>
-                                                <AlertDialogHeader>
-                                                  <AlertDialogTitle>Are you sure?</AlertDialogTitle>
-                                                  <AlertDialogDescription>
-                                                     This action cannot be undone. This will permanently delete the chat session "{session.name}".
-                                                   </AlertDialogDescription>
-                                                </AlertDialogHeader>
-                                               <AlertDialogFooter>
-                                                   <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                                   <AlertDialogAction onClick={() => deleteSession(session.id)} className="bg-destructive hover:bg-destructive/90">Delete</AlertDialogAction>
-                                                 </AlertDialogFooter>
-                                             </AlertDialogContent>
+                                            <AlertDialogContent onClick={(e) => e.stopPropagation()}> <AlertDialogHeader><AlertDialogTitle>Are you sure?</AlertDialogTitle><AlertDialogDescription>This action cannot be undone. This will permanently delete the chat session "{session.name}".</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => deleteSession(session.id)} className="bg-destructive hover:bg-destructive/90">Delete</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
                                         </AlertDialog>
-
-                                         {/* Move to Folder (Placeholder) */}
-                                          <TooltipProvider delayDuration={100}>
-                                            <Tooltip>
-                                                <TooltipTrigger asChild>
-                                                 <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-blue-500" onClick={(e) => {e.stopPropagation(); alert('Move to Folder clicked!')} /* Replace alert with modal logic */ }>
-                                                     <FolderPlus size={14} />
-                                                     <span className="sr-only">Move to Folder</span>
-                                                 </Button>
-                                                </TooltipTrigger>
-                                                <TooltipContent side="top"><p>Move to Folder</p></TooltipContent>
-                                            </Tooltip>
-                                          </TooltipProvider>
+                                        {/* Move to Folder */}
+                                          <TooltipProvider delayDuration={100}><Tooltip><TooltipTrigger asChild>
+                                             <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-blue-500" onClick={(e) => {e.stopPropagation(); openMoveToFolderModal(session.id); }}><FolderPlus size={14} /><span className="sr-only">Move to Folder</span></Button>
+                                            </TooltipTrigger><TooltipContent side="top"><p>Move to Folder</p></TooltipContent></Tooltip></TooltipProvider>
+                                         {/* Edit Tags */}
+                                          <TooltipProvider delayDuration={100}><Tooltip><TooltipTrigger asChild>
+                                             <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-purple-500" onClick={(e) => { e.stopPropagation(); startEditingTags(session.id); }}>
+                                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-tags"><path d="M9 5H2v7l6.29 6.29c.94.94 2.48.94 3.42 0l3.58-3.58c.94-.94.94-2.48 0-3.42L9 5Z"/><path d="M6 9.01V9"/><path d="m15 5 6.3 6.3a2.65 2.65 0 0 1 0 3.72L18.7 17.6a2.65 2.65 0 0 1-3.72 0L15 15"/><path d="m12 15-3-3"/></svg>
+                                                <span className="sr-only">Edit Tags</span>
+                                             </Button>
+                                            </TooltipTrigger><TooltipContent side="top"><p>Edit Tags</p></TooltipContent></Tooltip></TooltipProvider>
                                       </div>
                                   </li>
                               ))}
                           </ul>
                       ) : (
                           <div className="text-center text-muted-foreground py-8">
-                              <p>No chat history yet.</p>
+                              <p>No chat history found.</p>
+                              {filterTags.size > 0 && <p className="text-sm mt-1">Try clearing tag filters.</p>}
                               <Button size="sm" variant="link" onClick={createNewSession} className="mt-2">Start a new chat</Button>
                           </div>
                       )}
                    </ScrollArea>
-                   {/* TODO: Folder Modal Implementation */}
-                   {/* <FolderSelectionModal
-                        isOpen={showFolderModal}
-                        onClose={() => setShowFolderModal(false)}
-                        folders={folders}
-                        onSelectFolder={(folderId) => {
-                            if (sessionToMove) {
-                                moveSessionToFolder(sessionToMove, folderId);
-                            }
-                            setShowFolderModal(false);
-                            setSessionToMove(null);
-                        }}
-                        onCreateFolder={createFolder} // Pass create folder function
-                    /> */}
+
+                    {/* Create Folder Modal */}
+                    <AlertDialog open={showCreateFolderModal} onOpenChange={setShowCreateFolderModal}>
+                        <AlertDialogContent>
+                             <AlertDialogHeader>
+                               <AlertDialogTitle>Create New Folder</AlertDialogTitle>
+                               <AlertDialogDescription>Enter a name for your new folder.</AlertDialogDescription>
+                             </AlertDialogHeader>
+                             <div className="py-4">
+                                 <Input
+                                     id="new-folder-name"
+                                     placeholder="Folder Name"
+                                     value={newFolderName}
+                                     onChange={(e) => setNewFolderName(e.target.value)}
+                                     maxLength={30} // Optional: Limit folder name length
+                                 />
+                             </div>
+                             <AlertDialogFooter>
+                                 <AlertDialogCancel onClick={() => setNewFolderName("")}>Cancel</AlertDialogCancel>
+                                 <AlertDialogAction onClick={handleCreateFolder} disabled={!newFolderName.trim()}>Create</AlertDialogAction>
+                             </AlertDialogFooter>
+                        </AlertDialogContent>
+                    </AlertDialog>
+
+                     {/* Move to Folder Modal */}
+                    <AlertDialog open={showMoveToFolderModal} onOpenChange={setShowMoveToFolderModal}>
+                        <AlertDialogContent>
+                             <AlertDialogHeader>
+                               <AlertDialogTitle>Move Session to Folder</AlertDialogTitle>
+                               <AlertDialogDescription>Select a folder to move this session to, or move it out of folders.</AlertDialogDescription>
+                             </AlertDialogHeader>
+                              <ScrollArea className="max-h-60 my-4">
+                                <div className="space-y-2 pr-4">
+                                    <Button variant="ghost" className="w-full justify-start" onClick={() => handleMoveSessionToFolder(null)}>
+                                        (Move out of folder)
+                                    </Button>
+                                    {folders.map(folder => (
+                                        <Button key={folder.id} variant="ghost" className="w-full justify-start" onClick={() => handleMoveSessionToFolder(folder.id)}>
+                                            <FolderPlus size={16} className="mr-2"/> {folder.name}
+                                        </Button>
+                                    ))}
+                                    {folders.length === 0 && <p className="text-sm text-muted-foreground text-center py-2">No folders created yet.</p>}
+                                 </div>
+                               </ScrollArea>
+                             <AlertDialogFooter>
+                                 <AlertDialogCancel onClick={() => setSessionToMove(null)}>Cancel</AlertDialogCancel>
+                             </AlertDialogFooter>
+                        </AlertDialogContent>
+                    </AlertDialog>
+
+                    {/* Edit Tags Modal */}
+                    <AlertDialog open={!!editingTagsSessionId} onOpenChange={(open) => !open && cancelEditingTags()}>
+                         <AlertDialogContent>
+                            <AlertDialogHeader>
+                                <AlertDialogTitle>Edit Tags</AlertDialogTitle>
+                                <AlertDialogDescription>Add or remove tags for this session.</AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <div className="py-4 space-y-4">
+                                 {/* Existing Tags */}
+                                 <div className="flex flex-wrap gap-2">
+                                     {editingTags.length > 0 ? editingTags.map(tag => (
+                                         <Badge key={tag} variant="secondary" className="flex items-center gap-1">
+                                            {tag}
+                                             <Button variant="ghost" size="icon" onClick={() => handleRemoveTag(tag)} className="h-4 w-4 ml-1 p-0">
+                                                <X size={12} />
+                                                <span className="sr-only">Remove tag {tag}</span>
+                                             </Button>
+                                         </Badge>
+                                     )) : <p className="text-sm text-muted-foreground">No tags yet.</p>}
+                                 </div>
+                                 {/* Add New Tag Input */}
+                                 <div className="flex items-center gap-2">
+                                     <Input
+                                         ref={newTagInputRef}
+                                         id="new-tag-input"
+                                         placeholder="Add a tag (e.g., project-alpha)"
+                                         value={newTagInput}
+                                         onChange={(e) => setNewTagInput(e.target.value)}
+                                         onKeyDown={handleNewTagKeyDown}
+                                         maxLength={20}
+                                         className="flex-1"
+                                     />
+                                     <Button onClick={handleAddTag} disabled={!newTagInput.trim()}>Add</Button>
+                                 </div>
+                            </div>
+                             <AlertDialogFooter>
+                                <AlertDialogCancel onClick={cancelEditingTags}>Cancel</AlertDialogCancel>
+                                <AlertDialogAction onClick={handleSaveTags}>Save Tags</AlertDialogAction>
+                            </AlertDialogFooter>
+                         </AlertDialogContent>
+                     </AlertDialog>
+
                 </div>
            </TabsContent>
 
@@ -1041,7 +1275,6 @@ export default function ChatInterface() {
                       </TableHeader>
                       <TableBody>
                         {allAiMessages.map((msg) => {
-                            // Find the session this message belongs to
                             const session = chatSessions.find(s => s.messages.some(m => m.id === msg.id));
                             return (
                                 <TableRow key={msg.id}>
@@ -1091,41 +1324,54 @@ export default function ChatInterface() {
                   {/* Model Selection Section */}
                   <div className="space-y-4 p-4 border rounded-lg shadow-sm">
                     <div className="flex justify-between items-center gap-2 flex-wrap">
-                      <h4 className="text-base font-medium flex items-center"><BrainCircuit className="mr-2 h-4 w-4" /> Manage OpenRouter Models</h4>
-                      <Button onClick={handleRefreshModels} variant="outline" size="sm" disabled={isFetchingModels || !openRouterApiKey}>
-                        {isFetchingModels ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />} {isFetchingModels ? 'Fetching...' : 'Refresh List'}
-                      </Button>
-                    </div>
-                    <p className="text-sm text-muted-foreground">Select models for the chat dropdown. Click 'Save Selections'.</p>
+                       <h4 className="text-base font-medium flex items-center"><BrainCircuit className="mr-2 h-4 w-4" /> Manage OpenRouter Models</h4>
+                       <Button onClick={handleRefreshModels} variant="outline" size="sm" disabled={isFetchingModels || !openRouterApiKey}>
+                         {isFetchingModels ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />} {isFetchingModels ? 'Fetching...' : 'Refresh List'}
+                       </Button>
+                     </div>
+                     <p className="text-sm text-muted-foreground">Select up to {MAX_SELECTABLE_OPENROUTER_MODELS} models for the chat dropdown. Click 'Save Selections'.</p>
 
-                    {fetchModelsError && (<Alert variant="destructive"><AlertTitle>Error Fetching</AlertTitle><AlertDescription>{fetchModelsError}</AlertDescription></Alert>)}
-                     {!openRouterApiKey && (<Alert variant="default"><AlertTitle>API Key Required</AlertTitle><AlertDescription>Enter API key to fetch models.</AlertDescription></Alert>)}
+                     {fetchModelsError && (<Alert variant="destructive"><AlertTitle>Error Fetching</AlertTitle><AlertDescription>{fetchModelsError}</AlertDescription></Alert>)}
+                      {!openRouterApiKey && (<Alert variant="default"><AlertTitle>API Key Required</AlertTitle><AlertDescription>Enter API key to fetch and select models.</AlertDescription></Alert>)}
 
-                    {openRouterApiKey && !isFetchingModels && allOpenRouterModels.length > 0 && (
-                        <>
-                          <div className="flex flex-col sm:flex-row gap-2">
-                             <Input type="search" placeholder="Filter models..." value={filterTerm} onChange={(e) => setFilterTerm(e.target.value)} className="flex-1"/>
-                             <div className="flex gap-2"><Button onClick={handleSelectAllFilteredModels} variant="secondary" size="sm" className="flex-1 sm:flex-none">Select Filtered</Button><Button onClick={handleDeselectAllFilteredModels} variant="secondary" size="sm" className="flex-1 sm:flex-none">Deselect Filtered</Button></div>
-                          </div>
-                          <ScrollArea className="h-64 border rounded-md">
-                            <div className="p-4 space-y-3">
-                              {filteredModels.length > 0 ? ( filteredModels.map((model) => (
-                                  <div key={model.id} className="flex items-center space-x-3 bg-background p-2 rounded hover:bg-muted/50 transition-colors">
-                                    <Checkbox id={`model-${model.id}`} checked={selectedOpenRouterModelIds.has(model.id)} onCheckedChange={(checked) => handleModelSelectionChange(model.id, checked)} />
-                                    <div className="grid gap-1.5 leading-none flex-1 min-w-0">
-                                      <label htmlFor={`model-${model.id}`} className="text-sm font-medium truncate cursor-pointer" title={model.name}>{model.name || model.id}</label>
-                                      {model.context_length && (<p className="text-xs text-muted-foreground">Context: {model.context_length.toLocaleString()} tokens</p>)}
-                                    </div>
-                                  </div> ))
-                              ) : ( <p className="text-sm text-muted-foreground text-center py-4">No models match filter.</p> )}
-                            </div>
-                          </ScrollArea>
-                          <div className="flex justify-end pt-2">
-                             <Button onClick={handleImportSelectedModels}><Save className="mr-2 h-4 w-4" /> Save {selectedOpenRouterModelIds.size} Selected Model{selectedOpenRouterModelIds.size !== 1 ? 's' : ''}</Button>
+                     {openRouterApiKey && !isFetchingModels && allOpenRouterModels.length > 0 && (
+                         <>
+                           <div className="flex flex-col sm:flex-row gap-2">
+                              <Input type="search" placeholder="Filter models..." value={filterTerm} onChange={(e) => setFilterTerm(e.target.value)} className="flex-1"/>
+                              <div className="flex gap-2"><Button onClick={handleSelectAllFilteredModels} variant="secondary" size="sm" className="flex-1 sm:flex-none">Select Filtered</Button><Button onClick={handleDeselectAllFilteredModels} variant="secondary" size="sm" className="flex-1 sm:flex-none">Deselect Filtered</Button></div>
                            </div>
-                        </>
-                      )}
-                      {openRouterApiKey && !isFetchingModels && allOpenRouterModels.length === 0 && !fetchModelsError && ( <p className="text-sm text-muted-foreground text-center py-4">No models found. Click 'Refresh List'.</p> )}
+                            <p className="text-sm text-muted-foreground">Selected: {selectedOpenRouterModelIds.size} / {MAX_SELECTABLE_OPENROUTER_MODELS}</p>
+                           <ScrollArea className="h-64 border rounded-md">
+                             <div className="p-4 space-y-3">
+                               {filteredModels.length > 0 ? ( filteredModels.map((model) => (
+                                   <div key={model.id} className="flex items-center space-x-3 bg-background p-2 rounded hover:bg-muted/50 transition-colors">
+                                     <Checkbox
+                                        id={`model-${model.id}`}
+                                        checked={selectedOpenRouterModelIds.has(model.id)}
+                                        onCheckedChange={(checked) => handleModelSelectionChange(model.id, checked)}
+                                        // Disable checkbox if limit is reached and this model is not already selected
+                                        disabled={selectedOpenRouterModelIds.size >= MAX_SELECTABLE_OPENROUTER_MODELS && !selectedOpenRouterModelIds.has(model.id)}
+                                     />
+                                     <div className="grid gap-1.5 leading-none flex-1 min-w-0">
+                                       <label
+                                            htmlFor={`model-${model.id}`}
+                                            className={cn("text-sm font-medium truncate cursor-pointer", (selectedOpenRouterModelIds.size >= MAX_SELECTABLE_OPENROUTER_MODELS && !selectedOpenRouterModelIds.has(model.id)) && "text-muted-foreground opacity-70 cursor-not-allowed")}
+                                            title={model.name}
+                                       >
+                                            {model.name || model.id}
+                                       </label>
+                                       {model.context_length && (<p className="text-xs text-muted-foreground">Context: {model.context_length.toLocaleString()} tokens</p>)}
+                                     </div>
+                                   </div> ))
+                               ) : ( <p className="text-sm text-muted-foreground text-center py-4">No models match filter.</p> )}
+                             </div>
+                           </ScrollArea>
+                           <div className="flex justify-end pt-2">
+                              <Button onClick={handleImportSelectedModels}><Save className="mr-2 h-4 w-4" /> Save {selectedOpenRouterModelIds.size} Selected Model{selectedOpenRouterModelIds.size !== 1 ? 's' : ''}</Button>
+                            </div>
+                         </>
+                       )}
+                       {openRouterApiKey && !isFetchingModels && allOpenRouterModels.length === 0 && !fetchModelsError && ( <p className="text-sm text-muted-foreground text-center py-4">No models found. Click 'Refresh List'.</p> )}
                   </div>
                 </div>
               </ScrollArea>
