@@ -1,4 +1,3 @@
-
 'use client';
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
@@ -38,7 +37,7 @@ import { useToast } from "@/hooks/use-toast"; // Import useToast
 // --- Default Models ---
 // Always include these Google models
 const DEFAULT_GOOGLE_MODELS = [
-  { id: 'googleai/gemini-2.0-flash', name: 'Google Gemini 2.0 Flash', provider: 'google' },
+  { id: 'googleai/gemini-2.0-flash', name: 'Google Gemini 2.0 Flash', provider: 'google' as const },
   // Add other default Google models here if needed
 ];
 
@@ -184,33 +183,31 @@ export default function ChatInterface() {
       return model?.name || modelId; // Return name or ID if not found
   }
 
-  const updateActiveModels = useCallback((selectedIds: Set<string>, allFetchedModels: OpenRouterApiModel[]) => {
+  // --- Memoized Callback for updating Active Models list ---
+  // This function calculates the list of models available in the dropdown
+  const calculateActiveModels = useCallback((selectedIds: Set<string>, allFetchedModels: OpenRouterApiModel[]): AIModelInfo[] => {
       const selectedOpenRouterModels = allFetchedModels
         .filter(model => selectedIds.has(model.id))
         .map(model => ({
-          id: model.id, // OpenRouter IDs often don't need the prefix like Google AI does for Genkit routing, the flow handles it
+          id: `openrouter/${model.id}`, // Prefix with 'openrouter/' for flow routing
           name: model.name,
-          provider: 'openrouter' as const, // Explicitly type as 'openrouter'
+          provider: 'openrouter' as const,
           context_length: model.context_length,
         }));
 
       const newActiveModels = [...DEFAULT_GOOGLE_MODELS, ...selectedOpenRouterModels];
-      setActiveModels(newActiveModels);
-
-      // Ensure the currently selected model is still valid, otherwise reset to default
-      if (!newActiveModels.some(m => m.id === selectedModel.id)) {
-        setSelectedModel(DEFAULT_GOOGLE_MODELS[0]);
-      }
-       console.log("Updated active models:", newActiveModels);
-
-  }, [selectedModel.id]); // Add selectedModel.id dependency
+      console.log("Calculated active models:", newActiveModels);
+      return newActiveModels;
+  }, []); // No dependencies, it's a pure calculation function
 
 
     // --- Fetch OpenRouter Models ---
     const fetchOpenRouterModels = useCallback(async (apiKey: string) => {
         if (!apiKey) {
-            setAllOpenRouterModels([]);
+            setAllOpenRouterModels([]); // Clear existing models if key is removed/empty
             setFetchModelsError("API Key is required to fetch models.");
+            // Also clear the active models list, leaving only Google defaults
+             setActiveModels(calculateActiveModels(new Set(), [])); // Use the calculation function
             return;
         }
         setIsFetchingModels(true);
@@ -237,70 +234,79 @@ export default function ChatInterface() {
                  console.error("Unexpected OpenRouter models response structure:", data);
                  throw new Error("Invalid data structure received for models.");
              }
-            console.log(`Fetched ${data.data.length} OpenRouter models.`);
+            const fetchedModels: OpenRouterApiModel[] = data.data;
+            console.log(`Fetched ${fetchedModels.length} OpenRouter models.`);
 
-            // Filter out models that might not be suitable for chat completions if needed (optional)
-             // const chatModels = data.data.filter((model: OpenRouterApiModel) => model.architecture?.modality === 'text'); // Example filter
-             const chatModels: OpenRouterApiModel[] = data.data; // Keep all for now
-
-            setAllOpenRouterModels(chatModels);
-            // Update active models based on newly fetched list and currently selected IDs
-            updateActiveModels(selectedOpenRouterModelIds, chatModels);
+            setAllOpenRouterModels(fetchedModels);
+            // Update active models list based on the newly fetched data and *current* selections
+             setActiveModels(calculateActiveModels(selectedOpenRouterModelIds, fetchedModels));
 
         } catch (error) {
             console.error("Error fetching OpenRouter models:", error);
             const message = error instanceof Error ? error.message : "An unknown error occurred";
             setFetchModelsError(`Error fetching models: ${message}. Check your API key and network connection.`);
             setAllOpenRouterModels([]); // Clear models on error
+             setActiveModels(calculateActiveModels(new Set(), [])); // Reset active models on error
         } finally {
             setIsFetchingModels(false);
         }
-    }, [updateActiveModels, selectedOpenRouterModelIds]); // Include selectedOpenRouterModelIds
+    }, [calculateActiveModels, selectedOpenRouterModelIds]); // Depends on the calculator and current selections
 
 
   // --- Effects ---
 
-  // Load API key and selected models from local storage on mount
+  // Effect 1: Load API key and selected models from local storage on initial mount
   useEffect(() => {
     const storedApiKey = localStorage.getItem(OPENROUTER_API_KEY_STORAGE_KEY);
-    const storedSelectedModelIds = localStorage.getItem(SELECTED_OPENROUTER_MODELS_KEY);
+    const storedSelectedModelIdsJson = localStorage.getItem(SELECTED_OPENROUTER_MODELS_KEY);
+    let initialSelectedIds = new Set<string>();
 
     if (storedApiKey) {
       setOpenRouterApiKey(storedApiKey);
       console.log("Loaded OpenRouter API Key from localStorage.");
-      // Fetch models immediately if API key is loaded
-       fetchOpenRouterModels(storedApiKey);
+      // Trigger fetch immediately if key exists
+       fetchOpenRouterModels(storedApiKey); // Fetch will update allOpenRouterModels and activeModels
     }
 
-    if (storedSelectedModelIds) {
+    if (storedSelectedModelIdsJson) {
       try {
-        const parsedIds = JSON.parse(storedSelectedModelIds);
+        const parsedIds = JSON.parse(storedSelectedModelIdsJson);
         if (Array.isArray(parsedIds)) {
-            const idSet = new Set<string>(parsedIds);
-          setSelectedOpenRouterModelIds(idSet);
-          console.log("Loaded selected OpenRouter Model IDs from localStorage:", idSet);
-          // Update active models (will happen again after fetch if API key exists)
-           updateActiveModels(idSet, allOpenRouterModels); // Update with potentially empty `allOpenRouterModels` initially
+          initialSelectedIds = new Set<string>(parsedIds);
+          setSelectedOpenRouterModelIds(initialSelectedIds); // Set the state for selected IDs
+          console.log("Loaded selected OpenRouter Model IDs from localStorage:", initialSelectedIds);
         } else {
-             console.warn("Invalid format for stored selected model IDs in localStorage.");
-             localStorage.removeItem(SELECTED_OPENROUTER_MODELS_KEY); // Clear invalid data
-         }
+          console.warn("Invalid format for stored selected model IDs in localStorage.");
+          localStorage.removeItem(SELECTED_OPENROUTER_MODELS_KEY);
+        }
       } catch (e) {
         console.error("Error parsing selected model IDs from localStorage:", e);
-        localStorage.removeItem(SELECTED_OPENROUTER_MODELS_KEY); // Clear corrupted data
+        localStorage.removeItem(SELECTED_OPENROUTER_MODELS_KEY);
       }
-    } else {
-         // If no models are stored, initialize active models with defaults
-         updateActiveModels(new Set(), []); // Initialize with default google models
+    }
+
+    // Calculate initial active models based on loaded selections and *empty* fetched list initially
+    // The list will be updated again after fetchOpenRouterModels completes if an API key was loaded
+     if (!storedApiKey) {
+        setActiveModels(calculateActiveModels(initialSelectedIds, []));
      }
 
-     // Initial update in case only default models are used (no stored key/models)
-     // This ensures the default model is set correctly on first load without stored data
-     if (!storedApiKey && !storedSelectedModelIds) {
-       updateActiveModels(new Set(), []);
-     }
-  }, [fetchOpenRouterModels, updateActiveModels]); // Run only once on mount
+  }, [fetchOpenRouterModels, calculateActiveModels]); // Run only once on mount, depends on fetch and calculation functions
 
+
+  // Effect 2: Update `activeModels` whenever the selected IDs or the list of all models changes.
+  useEffect(() => {
+      setActiveModels(calculateActiveModels(selectedOpenRouterModelIds, allOpenRouterModels));
+  }, [selectedOpenRouterModelIds, allOpenRouterModels, calculateActiveModels]);
+
+  // Effect 3: Reset `selectedModel` to default if it's no longer in `activeModels`
+  useEffect(() => {
+      // Check if the current selectedModel exists in the updated activeModels list
+      if (!activeModels.some(m => m.id === selectedModel.id)) {
+          console.log("Selected model no longer active, resetting to default.");
+          setSelectedModel(DEFAULT_GOOGLE_MODELS[0]); // Reset to the first default Google model
+      }
+  }, [activeModels, selectedModel.id]); // Re-run when activeModels changes or selectedModel.id changes
 
 
   // Scroll chat to bottom
@@ -338,11 +344,13 @@ export default function ChatInterface() {
       if (typeof checked === 'boolean') {
          setSelectedOpenRouterModelIds(prev => {
              const newSet = new Set(prev);
+             // Use the ID *without* the 'openrouter/' prefix as stored in allOpenRouterModels
              if (checked) {
                  newSet.add(modelId);
              } else {
                  newSet.delete(modelId);
              }
+             console.log("Updated selected model IDs (in Settings):", newSet);
              return newSet;
          });
       }
@@ -351,7 +359,9 @@ export default function ChatInterface() {
    const handleSelectAllFilteredModels = () => {
      setSelectedOpenRouterModelIds(prev => {
        const newSet = new Set(prev);
+       // Add the IDs *without* the 'openrouter/' prefix
        filteredModels.forEach(model => newSet.add(model.id));
+        console.log("Selected all filtered models (in Settings):", newSet);
        return newSet;
      });
    };
@@ -359,7 +369,9 @@ export default function ChatInterface() {
    const handleDeselectAllFilteredModels = () => {
       setSelectedOpenRouterModelIds(prev => {
           const newSet = new Set(prev);
+          // Delete the IDs *without* the 'openrouter/' prefix
           filteredModels.forEach(model => newSet.delete(model.id));
+           console.log("Deselected all filtered models (in Settings):", newSet);
           return newSet;
       });
     };
@@ -367,9 +379,10 @@ export default function ChatInterface() {
   const handleImportSelectedModels = () => {
       const selectedIdsArray = Array.from(selectedOpenRouterModelIds);
       localStorage.setItem(SELECTED_OPENROUTER_MODELS_KEY, JSON.stringify(selectedIdsArray));
-      updateActiveModels(selectedOpenRouterModelIds, allOpenRouterModels);
-      console.log("Imported selected models:", selectedOpenRouterModelIds);
-      toast({ title: "Models Imported", description: `${selectedOpenRouterModelIds.size} OpenRouter models added to the chat list.` });
+      // Trigger recalculation of active models by updating the state that Effect 2 depends on
+      // No need to call setActiveModels directly here, the effect will handle it.
+      console.log("Imported selected model IDs to localStorage:", selectedIdsArray);
+      toast({ title: "Models Imported", description: `${selectedOpenRouterModelIds.size} OpenRouter models selection saved. They are now available in the chat list.` });
    };
 
 
@@ -449,7 +462,7 @@ export default function ChatInterface() {
       let calculatedCost = 0;
 
       const assistantInput: SmartAssistantPromptingInput = {
-        modelId: selectedModel.id,
+        modelId: selectedModel.id, // This will be 'googleai/...' or 'openrouter/...'
         prompt: userMessageText,
         ...(userMessageFile && { fileDataUri: userMessageFile.dataUri }),
         ...(selectedModel.provider === 'openrouter' && { apiKey: openRouterApiKey || process.env.NEXT_PUBLIC_OPENROUTER_API_KEY }), // Pass key from state or env
@@ -514,6 +527,7 @@ export default function ChatInterface() {
   const aiMessages = messages.filter(m => m.sender === 'ai' && !m.isError);
 
   // Filter models based on the search term in settings
+  // Filters `allOpenRouterModels` which stores models without the 'openrouter/' prefix
   const filteredModels = React.useMemo(() => {
       if (!filterTerm) {
           return allOpenRouterModels;
@@ -521,7 +535,7 @@ export default function ChatInterface() {
       const lowerCaseFilter = filterTerm.toLowerCase();
       return allOpenRouterModels.filter(model =>
           model.name.toLowerCase().includes(lowerCaseFilter) ||
-          model.id.toLowerCase().includes(lowerCaseFilter)
+          model.id.toLowerCase().includes(lowerCaseFilter) // Check ID without prefix
       );
   }, [allOpenRouterModels, filterTerm]);
 
@@ -550,7 +564,7 @@ export default function ChatInterface() {
                     {activeModels.length > 0 ? (
                      activeModels.map((model) => (
                        <DropdownMenuItem
-                         key={model.id}
+                         key={model.id} // Use the full ID (e.g., 'openrouter/...') as key
                          onSelect={() => setSelectedModel(model)}
                          disabled={isSending}
                          className={cn(selectedModel?.id === model.id && "bg-accent/50")} // Highlight selected
@@ -781,6 +795,7 @@ export default function ChatInterface() {
                                 <div key={model.id} className="flex items-center space-x-3 bg-background p-2 rounded hover:bg-muted/50 transition-colors">
                                   <Checkbox
                                     id={`model-${model.id}`}
+                                    // Check against the ID *without* prefix
                                     checked={selectedOpenRouterModelIds.has(model.id)}
                                     onCheckedChange={(checked) => handleModelSelectionChange(model.id, checked)}
                                   />
@@ -891,7 +906,7 @@ export default function ChatInterface() {
                  : "Send message"
                 }
             >
-              <Send className="h-5 w-5" />
+             {isSending ? <Loader2 className="h-5 w-5 animate-spin" /> : <Send className="h-5 w-5" />}
             </Button>
           </div>
            {selectedFile && (
