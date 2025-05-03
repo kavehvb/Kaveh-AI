@@ -1,1 +1,2 @@
-// Flows will be imported for their side effects in this file.
+import '@/ai/flows/smart-assistant-prompting.ts';
+import '@/ai/flows/file-based-content-understanding.ts';
