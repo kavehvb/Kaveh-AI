@@ -62,6 +62,7 @@ interface Message {
   cost?: number; // Add cost field to store simulated cost
   timestamp: number; // Add timestamp for analysis tab
   modelId?: string; // Track which model was used for the response
+  isError?: boolean; // Flag for error messages
 }
 
 // Helper function to format currency
@@ -195,6 +196,7 @@ export default function ChatInterface() {
       }
       reader.readAsDataURL(file);
     }
+     // Always reset the input value so the same file can be selected again
      if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
@@ -208,7 +210,8 @@ export default function ChatInterface() {
      }
 
      // Check if API key is needed and present for OpenRouter models
-     if (selectedModel.provider === 'openrouter' && !openRouterApiKey && !process.env.NEXT_PUBLIC_OPENROUTER_API_KEY) { // Also check env var if needed
+     // Use NEXT_PUBLIC_ prefix if accessing env vars client-side, otherwise they are server-side only
+     if (selectedModel.provider === 'openrouter' && !openRouterApiKey && !process.env.NEXT_PUBLIC_OPENROUTER_API_KEY) {
         setError(`OpenRouter API key is required for model ${selectedModel.name}. Please set it in the Settings tab.`);
         return;
      }
@@ -243,7 +246,8 @@ export default function ChatInterface() {
         modelId: selectedModel.id,
         prompt: userMessageText,
         ...(userMessageFile && { fileDataUri: userMessageFile.dataUri }), // Pass file URI if present
-        ...(selectedModel.provider === 'openrouter' && { apiKey: openRouterApiKey }), // Pass API key if OpenRouter model
+        // Pass the API key directly from state if it's an OpenRouter model
+        ...(selectedModel.provider === 'openrouter' && { apiKey: openRouterApiKey }),
       };
 
       console.log("Sending to smartAssistantPrompting with input:", assistantInput);
@@ -273,10 +277,20 @@ export default function ChatInterface() {
 
     } catch (err) {
       console.error("Error calling AI:", err);
-      const errorMessage = err instanceof Error ? err.message : "An unknown error occurred.";
-      setError(`Failed to get response from AI: ${errorMessage}`);
+      // Extract a more specific error message if available
+      const errorMessage = err instanceof Error ? err.message : "An unknown error occurred while processing your request.";
+      setError(`Failed to get response: ${errorMessage}`); // Update the general error state for the footer alert
       const errorTimestamp = Date.now();
-       setMessages((prev) => [...prev, {id: errorTimestamp + 1, sender: 'ai', text: `Error: Could not process the request. ${errorMessage}`, cost: 0, timestamp: errorTimestamp, modelId: selectedModel.id}]);
+       // Add a specific error message bubble to the chat history
+       setMessages((prev) => [...prev, {
+           id: errorTimestamp + 1,
+           sender: 'ai',
+           text: `Error: Could not process the request. ${errorMessage}`, // Display the detailed error message
+           cost: 0,
+           timestamp: errorTimestamp,
+           modelId: selectedModel.id,
+           isError: true // Mark this message as an error
+        }]);
     } finally {
       setIsSending(false);
     }
@@ -295,7 +309,7 @@ export default function ChatInterface() {
     setTimeout(() => setError(null), 3000);
   };
 
-  const aiMessages = messages.filter(m => m.sender === 'ai');
+  const aiMessages = messages.filter(m => m.sender === 'ai' && !m.isError); // Exclude error messages from analysis
   const getModelName = (modelId: string | undefined) => {
       if (!modelId) return 'Unknown Model';
       return AVAILABLE_MODELS.find(m => m.id === modelId)?.name || modelId;
@@ -361,7 +375,7 @@ export default function ChatInterface() {
                       'max-w-[75%] rounded-lg p-3 shadow-sm relative group', // Added relative and group
                       message.sender === 'user'
                         ? 'bg-primary text-primary-foreground'
-                        : 'bg-secondary text-secondary-foreground'
+                        : message.isError ? 'bg-destructive/10 border border-destructive/30 text-destructive' : 'bg-secondary text-secondary-foreground' // Conditional error styling
                     )}
                   >
                     {message.file && (
@@ -371,8 +385,8 @@ export default function ChatInterface() {
                       </div>
                     )}
                     <p className="text-sm whitespace-pre-wrap">{message.text}</p>
-                     {/* Show cost tooltip on hover for AI messages */}
-                    {message.sender === 'ai' && message.cost !== undefined && (
+                     {/* Show cost tooltip on hover for AI messages (only non-errors) */}
+                    {message.sender === 'ai' && !message.isError && message.cost !== undefined && (
                        <TooltipProvider delayDuration={100}>
                           <Tooltip>
                             <TooltipTrigger asChild>
@@ -417,9 +431,9 @@ export default function ChatInterface() {
           <ScrollArea className="h-full p-4" ref={analyseScrollAreaRef}>
             <div className="space-y-4">
               <h3 className="text-lg font-semibold mb-2 text-primary">API Usage Analysis</h3>
-               {aiMessages.length > 0 ? (
+               {aiMessages.length > 0 ? ( // Use filtered aiMessages here
                  <Table>
-                   <TableCaption>Estimated cost per AI response. Total estimated cost: {formatCurrency(totalCost)}</TableCaption>
+                   <TableCaption>Estimated cost per successful AI response. Total estimated cost: {formatCurrency(totalCost)}</TableCaption>
                     <TableHeader>
                       <TableRow>
                         <TableHead>Timestamp</TableHead>
@@ -429,7 +443,7 @@ export default function ChatInterface() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {aiMessages.map((msg) => (
+                      {aiMessages.map((msg) => ( // Use filtered aiMessages here
                         <TableRow key={msg.id}>
                           <TableCell className="text-xs">{new Date(msg.timestamp).toLocaleString()}</TableCell>
                           <TableCell className="text-xs">{getModelName(msg.modelId)}</TableCell>
@@ -446,7 +460,7 @@ export default function ChatInterface() {
                ) : (
                  <div className="text-center text-muted-foreground py-8">
                    <BarChart className="mx-auto h-12 w-12 mb-2 opacity-50" />
-                   <p>No AI interactions yet. Send some messages to see the cost analysis.</p>
+                   <p>No successful AI interactions yet. Send some messages to see the cost analysis.</p>
                  </div>
                )}
 
@@ -508,6 +522,7 @@ export default function ChatInterface() {
         <CardFooter className="border-t p-4 flex-col items-start gap-2">
            {error && (
             <Alert variant="destructive" className="mb-2 w-full">
+               {/* <AlertCircle className="h-4 w-4" /> */}
                <AlertTitle>Error</AlertTitle>
               <AlertDescription>{error}</AlertDescription>
             </Alert>
@@ -574,7 +589,7 @@ export default function ChatInterface() {
               <div className="mt-2 text-sm text-muted-foreground flex items-center gap-2 w-full">
                 <Paperclip size={14} />
                 <span className="truncate max-w-[calc(100%-80px)]">{selectedFile.name}</span>
-                <Button variant="ghost" size="sm" onClick={() => {setSelectedFile(null); setFileDataUri(undefined); setError(null);}} className="p-1 h-auto text-destructive hover:text-destructive/80 ml-auto">
+                <Button variant="ghost" size="sm" onClick={() => {setSelectedFile(null); setFileDataUri(undefined); setError(null); if(fileInputRef.current) fileInputRef.current.value = '';}} className="p-1 h-auto text-destructive hover:text-destructive/80 ml-auto">
                   Remove
                 </Button>
               </div>

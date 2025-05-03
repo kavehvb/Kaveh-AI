@@ -90,6 +90,7 @@ async (input) => {
       }
 
     // Extract the actual model ID expected by the OpenRouter API
+    // Example: "openrouter/mistralai/mistral-7b-instruct" -> "mistralai/mistral-7b-instruct"
     const openRouterModelId = input.modelId.replace(/^openrouter\//, '');
     console.log(`Routing to OpenRouter model: ${openRouterModelId} (Original ID: ${input.modelId})`);
 
@@ -105,47 +106,72 @@ async (input) => {
         headers: {
           "Authorization": `Bearer ${apiKey}`, // Use the determined API key
           "Content-Type": "application/json",
-          // Optional: Set HTTP Referer or X-Title for analytics
+          // Optional headers recommended by OpenRouter:
           // "HTTP-Referer": $YOUR_SITE_URL, // Replace with your site URL
           // "X-Title": $YOUR_SITE_NAME // Replace with your site name
         },
         body: JSON.stringify({
           model: openRouterModelId, // Use the corrected OpenRouter model ID
           messages: [
+            // Structure according to OpenRouter /chat/completions docs
+            // TODO: Consider adding system prompts or conversation history if needed
             { role: "user", content: input.prompt }
-            // TODO: Add support for multimodal input if needed and supported by the model
           ]
+          // Add other parameters like temperature, max_tokens if desired
+          // "temperature": 0.7,
+          // "max_tokens": 1024,
         })
       });
 
+      // Check if the request was successful
       if (!response.ok) {
-        const errorBody = await response.text();
-        console.error("OpenRouter API Error:", response.status, errorBody);
-        // Try parsing the error body as JSON for more details
-        let errorMessage = errorBody;
+        // Attempt to read the error response body for more details
+        let errorBody = await response.text(); // Read as text first
+        let errorMessage = `OpenRouter API request failed with status ${response.status}`;
+        console.error("OpenRouter API Error Status:", response.status);
+        console.error("OpenRouter API Error Response Body:", errorBody);
+
+        // Try parsing as JSON, as OpenRouter often returns JSON errors
         try {
             const errorJson = JSON.parse(errorBody);
-            errorMessage = errorJson?.error?.message || errorBody;
+            // Extract message from common error structures
+            errorMessage = errorJson?.error?.message || errorJson?.detail || JSON.stringify(errorJson) || errorBody;
         } catch (parseError) {
-            // Ignore if parsing fails, use the raw text
+            // If parsing fails, use the raw text body
+            errorMessage = errorBody || errorMessage; // Fallback to status code message if body is empty
         }
-        throw new Error(`OpenRouter API request failed with status ${response.status}: ${errorMessage}`);
+
+        console.error("Detailed OpenRouter Error:", errorMessage);
+        // Throw a more informative error
+        throw new Error(`OpenRouter API Error: ${response.status} - ${errorMessage}`);
       }
 
+      // Parse the successful JSON response
       const data = await response.json();
+      console.log("OpenRouter Raw Success Response:", data);
 
-      // Extract the response content - structure might vary slightly
+      // Extract the response content according to OpenRouter documentation
+      // It follows the OpenAI standard: choices[0].message.content
       const responseContent = data.choices?.[0]?.message?.content;
+
       if (typeof responseContent !== 'string') {
-        console.error("Unexpected OpenRouter response structure:", data);
-        throw new Error("Failed to parse response from OpenRouter model.");
+        console.error("Unexpected OpenRouter response structure or missing content:", data);
+        throw new Error("Failed to parse response content from OpenRouter model. The response structure might be unexpected.");
       }
 
+      // Return the valid response
       return { response: responseContent };
 
     } catch (error) {
-      console.error("Error calling OpenRouter API:", error);
-      throw error; // Re-throw the error to be caught by the caller
+        // Log the error caught during fetch or processing
+        console.error("Error during OpenRouter API call or processing:", error);
+        // Re-throw the error to be caught by the caller (e.g., the UI)
+        // Ensure the error message is informative
+        if (error instanceof Error) {
+             throw error; // Re-throw the original error if it's already an Error instance
+        } else {
+            throw new Error(`An unexpected issue occurred while communicating with OpenRouter: ${String(error)}`);
+        }
     }
 
   } else if (input.modelId.startsWith('googleai/')) {
@@ -167,28 +193,32 @@ async (input) => {
     // Let's explicitly call ai.generate to ensure the correct model is used.
      try {
         // Determine the actual Google AI model ID
-        const googleAiModelId = input.modelId.replace(/^googleai\//, ''); // Ensure prefix is removed if present, though Genkit might handle it
+        const googleAiModelId = input.modelId; //.replace(/^googleai\//, ''); // Genkit expects the full ID like 'googleai/model-name'
         console.log(`Using Genkit with Google AI model: ${googleAiModelId}`);
 
         const { output } = await ai.generate({
-            model: input.modelId, // Use the full ID Genkit expects (e.g., googleai/gemini-...)
+            model: googleAiModelId, // Use the full ID Genkit expects (e.g., googleai/gemini-...)
             prompt: promptInput,  // Use the simplified input for the prompt template
             output: { schema: googleAIPrompt.outputSchema }, // Ensure output schema matches
              // Pass config if needed, e.g., for temperature (though prompt templates are preferred)
             // config: { temperature: 0.7 }
         });
 
-       if (!output) {
-         throw new Error('Google AI model did not return a valid output.');
+       if (!output || typeof (output as any).response !== 'string') {
+         console.error("Google AI model via Genkit did not return a valid output or response string:", output);
+         throw new Error('Google AI model did not return a valid response.');
        }
         // Assuming the generate call respects the output schema which has a 'response' field
-        // Cast to 'any' temporarily if the exact output structure isn't strongly typed yet
         return { response: (output as any).response };
 
 
       } catch (error) {
         console.error("Error calling Google AI model via Genkit:", error);
-        throw error; // Re-throw the error
+         if (error instanceof Error) {
+             throw error;
+        } else {
+            throw new Error(`An unexpected issue occurred while communicating with Google AI via Genkit: ${String(error)}`);
+        }
       }
 
 
