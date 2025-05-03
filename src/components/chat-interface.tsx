@@ -1,3 +1,4 @@
+
 'use client';
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
@@ -40,7 +41,7 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger, // Corrected import
+  AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 
@@ -64,7 +65,7 @@ const DEFAULT_GOOGLE_MODELS = [
 
 // --- Interfaces ---
 interface Message {
-  id: string; // Changed to string for potentially more robust IDs
+  id: string;
   sender: 'user' | 'ai';
   text: string;
   file?: { name: string; dataUri: string };
@@ -158,7 +159,7 @@ export default function ChatInterface() {
   const [fileDataUri, setFileDataUri] = useState<string | undefined>(undefined);
   const [isSending, setIsSending] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [isListening, setIsListening] = useState<boolean>(false); // Renamed from isRecording
+  const [isListening, setIsListening] = useState<boolean>(false);
   const [isSpeechRecognitionSupported, setIsSpeechRecognitionSupported] = useState<boolean>(false);
   const [thinkingMessageId, setThinkingMessageId] = useState<string | null>(null); // ID of the message currently showing thinking steps
   const [openRouterApiKey, setOpenRouterApiKey] = useState<string>('');
@@ -266,8 +267,11 @@ export default function ChatInterface() {
           console.warn(`Attempting to load API key ${key} as plain text due to JSON parse error.`);
           const plainTextKey = localStorage.getItem(key);
           if (plainTextKey) return plainTextKey as T;
+      } else if (error instanceof SyntaxError) {
+           console.error(`Invalid JSON found for key ${key}, using default value. Data: ${localStorage.getItem(key)}`);
       }
-      localStorage.removeItem(key); // Clear corrupted data only if not API key parse issue
+      // Do not remove item if it's just a parse error, might be valid non-JSON like API key
+      // localStorage.removeItem(key);
     }
     return defaultValue;
   }, []);
@@ -664,7 +668,10 @@ export default function ChatInterface() {
         };
 
         recognitionRef.current.onerror = (event) => {
-            console.error('Speech recognition error:', event.error);
+            // Don't log 'no-speech' error to console, as it's expected user behavior
+            if (event.error !== 'no-speech') {
+                console.error('Speech recognition error:', event.error);
+            }
              let errorMsg = "Speech recognition error";
              if (event.error === 'no-speech') errorMsg = "No speech detected.";
              else if (event.error === 'audio-capture') errorMsg = "Audio capture failed (check microphone).";
@@ -677,7 +684,8 @@ export default function ChatInterface() {
 
         recognitionRef.current.onend = () => {
             console.log("Speech recognition ended.");
-            if (isListening) { // Only set to false if it was manually stopped by user or error
+            // Ensure listening state is reset if recognition ends naturally
+            if (isListening) {
                  setIsListening(false);
             }
         };
@@ -743,6 +751,24 @@ export default function ChatInterface() {
       });
     }
   }, [messages, activeTab, thinkingMessageId]); // Added thinkingMessageId dependency
+
+ // Effect 5: Ensure `isListening` state matches recognitionRef state
+  useEffect(() => {
+    const recognition = recognitionRef.current;
+    if (!recognition) return;
+
+    const handleStart = () => setIsListening(true);
+    const handleEnd = () => setIsListening(false); // Includes normal end and errors
+
+    recognition.addEventListener('start', handleStart);
+    recognition.addEventListener('end', handleEnd);
+    // The 'error' event also triggers 'end', so we don't need a separate listener here
+
+    return () => {
+      recognition.removeEventListener('start', handleStart);
+      recognition.removeEventListener('end', handleEnd);
+    };
+  }, []);
 
 
   // --- Event Handlers ---
@@ -1016,29 +1042,29 @@ export default function ChatInterface() {
 
      if (isListening) {
         recognitionRef.current?.stop();
-        setIsListening(false);
+        // No need to setIsListening(false) here, onend handler will do it
         console.log("Speech recognition stopped manually.");
      } else {
          try {
              recognitionRef.current?.start();
-             setIsListening(true);
+             // No need to setIsListening(true) here, onstart handler will do it
              setError(null); // Clear previous errors
-             console.log("Speech recognition started.");
+             console.log("Speech recognition starting...");
          } catch (e) {
             console.error("Error starting speech recognition:", e);
              if (e instanceof DOMException && e.name === 'InvalidStateError') {
-                 setError("Speech recognition is already active or starting.");
-                 // Attempt to reset if needed, though typically handled by onend/onerror
+                 setError("Speech recognition could not start. Please try again.");
+                 toast({ variant: "destructive", title: "Voice Input Error", description: "Could not start, please try again." });
+                 // Try to recover by aborting and restarting after a short delay
                  recognitionRef.current?.abort();
                  setTimeout(() => {
-                      recognitionRef.current?.start();
-                      setIsListening(true);
+                     try { recognitionRef.current?.start(); } catch (restartError) { console.error("Error restarting speech recognition:", restartError); }
                  }, 100);
              } else {
                  setError("Could not start voice input. Check microphone permissions.");
                  toast({ variant: "destructive", title: "Voice Input Error", description: "Check microphone permissions." });
              }
-             setIsListening(false);
+             setIsListening(false); // Ensure state is false if start failed immediately
          }
      }
   };
@@ -1577,3 +1603,6 @@ export default function ChatInterface() {
     </Card>
   );
 }
+
+
+    
