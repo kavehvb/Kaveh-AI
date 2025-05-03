@@ -40,7 +40,7 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger,
+  AlertDialogTrigger, // Corrected import
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 
@@ -64,7 +64,7 @@ const DEFAULT_GOOGLE_MODELS = [
 
 // --- Interfaces ---
 interface Message {
-  id: number;
+  id: string; // Changed to string for potentially more robust IDs
   sender: 'user' | 'ai';
   text: string;
   file?: { name: string; dataUri: string };
@@ -72,6 +72,7 @@ interface Message {
   timestamp: number;
   modelId?: string;
   isError?: boolean;
+  thinkingSteps?: string[]; // Added for thinking steps
 }
 
 interface AIModelInfo {
@@ -157,7 +158,9 @@ export default function ChatInterface() {
   const [fileDataUri, setFileDataUri] = useState<string | undefined>(undefined);
   const [isSending, setIsSending] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [isRecording, setIsRecording] = useState<boolean>(false);
+  const [isListening, setIsListening] = useState<boolean>(false); // Renamed from isRecording
+  const [isSpeechRecognitionSupported, setIsSpeechRecognitionSupported] = useState<boolean>(false);
+  const [thinkingMessageId, setThinkingMessageId] = useState<string | null>(null); // ID of the message currently showing thinking steps
   const [openRouterApiKey, setOpenRouterApiKey] = useState<string>('');
   const [apiKeySaved, setApiKeySaved] = useState<boolean>(false);
   const [allOpenRouterModels, setAllOpenRouterModels] = useState<OpenRouterApiModel[]>([]);
@@ -195,6 +198,7 @@ export default function ChatInterface() {
   const historyScrollAreaRef = useRef<HTMLDivElement>(null);
   const editNameInputRef = useRef<HTMLInputElement>(null);
   const newTagInputRef = useRef<HTMLInputElement>(null);
+  const recognitionRef = useRef<SpeechRecognition | null>(null); // Ref for SpeechRecognition instance
 
   // --- Derived State ---
   const activeSession = React.useMemo(() => {
@@ -211,9 +215,9 @@ export default function ChatInterface() {
 
   const allAiMessages = React.useMemo(() => {
       return chatSessions.flatMap(session =>
-          session.messages.filter(m => m.sender === 'ai' && !m.isError)
+          session.messages.filter(m => m.sender === 'ai' && !m.isError && m.id !== thinkingMessageId) // Exclude thinking messages
       );
-  }, [chatSessions]);
+  }, [chatSessions, thinkingMessageId]);
 
   // --- Utility Functions ---
   const getModelName = useCallback((modelId: string | undefined): string => {
@@ -226,6 +230,10 @@ export default function ChatInterface() {
     if (!firstMessageText) return DEFAULT_SESSION_NAME;
     const name = firstMessageText.substring(0, SESSION_NAME_TRUNCATE_LENGTH);
     return name.length === SESSION_NAME_TRUNCATE_LENGTH ? `${name}...` : name;
+  };
+
+  const generateMessageId = (): string => {
+    return `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
   };
 
   // --- Local Storage Interaction ---
@@ -243,13 +251,23 @@ export default function ChatInterface() {
     try {
       const storedData = localStorage.getItem(key);
       if (storedData) {
+         // Handle potential non-JSON data for specific keys like API key
+        if (key === OPENROUTER_API_KEY_STORAGE_KEY && !storedData.startsWith('{') && !storedData.startsWith('[')) {
+             console.log(`Loaded ${key} (non-JSON) from localStorage.`);
+             return storedData as T;
+        }
         const parsedData = JSON.parse(storedData);
         console.log(`Loaded ${key} from localStorage.`);
         return parsedData as T;
       }
     } catch (error) {
       console.error(`Error loading ${key} from localStorage:`, error);
-      localStorage.removeItem(key); // Clear corrupted data
+      if (error instanceof SyntaxError && key === OPENROUTER_API_KEY_STORAGE_KEY) {
+          console.warn(`Attempting to load API key ${key} as plain text due to JSON parse error.`);
+          const plainTextKey = localStorage.getItem(key);
+          if (plainTextKey) return plainTextKey as T;
+      }
+      localStorage.removeItem(key); // Clear corrupted data only if not API key parse issue
     }
     return defaultValue;
   }, []);
@@ -281,6 +299,7 @@ export default function ChatInterface() {
     setSelectedFile(null);
     setFileDataUri(undefined);
     setError(null);
+    setThinkingMessageId(null); // Clear thinking message on new session
     setActiveTab("chat");
     console.log(`Created new session: ${newSessionId}`);
   }, [saveToLocalStorage]);
@@ -295,6 +314,7 @@ export default function ChatInterface() {
       setSelectedFile(null);
       setFileDataUri(undefined);
       setError(null);
+      setThinkingMessageId(null); // Clear thinking message on session switch
       setActiveTab("chat");
       console.log(`Switched to session: ${sessionId}`);
     } else {
@@ -323,13 +343,15 @@ export default function ChatInterface() {
         if (newActiveSessionId) {
            setActiveSessionId(newActiveSessionId);
            localStorage.setItem(ACTIVE_SESSION_ID_STORAGE_KEY, newActiveSessionId);
+        } else {
+            createNewSession(); // Create a new one if all are deleted
         }
       }
       return updatedSessions;
     });
     toast({ title: "Session Deleted", description: "The chat history has been removed." });
     console.log(`Deleted session: ${sessionIdToDelete}`);
-  }, [activeSessionId, saveToLocalStorage, toast]);
+  }, [activeSessionId, saveToLocalStorage, toast, createNewSession]);
 
   const startEditingSessionName = useCallback((sessionId: string) => {
       const session = chatSessions.find(s => s.id === sessionId);
@@ -573,34 +595,37 @@ export default function ChatInterface() {
 
   // --- Effects ---
 
-  // Effect 1: Load initial data from localStorage
+  // Effect 1: Load initial data from localStorage & setup Speech Recognition
   useEffect(() => {
-    const loadedSessions = loadFromLocalStorage<ChatSession[]>(CHAT_SESSIONS_STORAGE_KEY, []).map(s => ({
-        ...s,
-        tags: s.tags || [], // Ensure tags array exists
-        isBookmarked: s.isBookmarked || false,
-        folderId: s.folderId || null,
-        totalCost: s.totalCost || 0,
-        createdAt: s.createdAt || Date.now(),
-        lastModified: s.lastModified || Date.now(),
-        messages: s.messages || [],
-        name: s.name || DEFAULT_SESSION_NAME,
-    }));
+    // Load Sessions
+     const loadedSessions = loadFromLocalStorage<ChatSession[]>(CHAT_SESSIONS_STORAGE_KEY, []).map(s => ({
+         ...s,
+         messages: s.messages?.map(m => ({ ...m, id: m.id ?? generateMessageId() })) || [], // Ensure messages have IDs
+         tags: s.tags || [],
+         isBookmarked: s.isBookmarked || false,
+         folderId: s.folderId || null,
+         totalCost: s.totalCost || 0,
+         createdAt: s.createdAt || Date.now(),
+         lastModified: s.lastModified || Date.now(),
+         name: s.name || DEFAULT_SESSION_NAME,
+     }));
     setChatSessions(loadedSessions);
 
+    // Load Settings
     const storedApiKey = loadFromLocalStorage<string>(OPENROUTER_API_KEY_STORAGE_KEY, '');
     const storedSelectedModelIds = loadFromLocalStorage<string[]>(SELECTED_OPENROUTER_MODELS_KEY, []);
-    const initialSelectedIds = new Set(storedSelectedModelIds.slice(0, MAX_SELECTABLE_OPENROUTER_MODELS)); // Respect limit on load
+    const initialSelectedIds = new Set(storedSelectedModelIds.slice(0, MAX_SELECTABLE_OPENROUTER_MODELS));
 
     setOpenRouterApiKey(storedApiKey);
     setSelectedOpenRouterModelIds(initialSelectedIds);
 
     if (storedApiKey) {
-      fetchOpenRouterModels(storedApiKey); // Fetch models if API key exists
+      fetchOpenRouterModels(storedApiKey);
     } else {
-      setActiveModels(calculateActiveModels(initialSelectedIds, [])); // Calculate with defaults if no key
+      setActiveModels(calculateActiveModels(initialSelectedIds, []));
     }
 
+    // Load Folders
     const loadedFolders = loadFromLocalStorage<ChatFolder[]>(CHAT_FOLDERS_STORAGE_KEY, []);
     setFolders(loadedFolders);
 
@@ -610,7 +635,7 @@ export default function ChatInterface() {
     if (storedActiveId && loadedSessions.some(s => s.id === storedActiveId)) {
         activeIdToSet = storedActiveId;
     } else if (loadedSessions.length > 0) {
-        activeIdToSet = loadedSessions[0].id; // Default to the most recent
+        activeIdToSet = loadedSessions[0].id;
     }
 
     if (activeIdToSet) {
@@ -619,10 +644,54 @@ export default function ChatInterface() {
             localStorage.setItem(ACTIVE_SESSION_ID_STORAGE_KEY, activeIdToSet);
         }
     } else {
-        // No sessions loaded, create a new one
         createNewSession();
     }
-  }, [loadFromLocalStorage, fetchOpenRouterModels, createNewSession, calculateActiveModels]);
+
+    // Speech Recognition Setup
+    const SpeechRecognition = window.SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (SpeechRecognition) {
+        setIsSpeechRecognitionSupported(true);
+        recognitionRef.current = new SpeechRecognition();
+        recognitionRef.current.continuous = false; // Stop listening after first result
+        recognitionRef.current.lang = 'en-US'; // Adjust language as needed
+        recognitionRef.current.interimResults = false; // Get final result only
+
+        recognitionRef.current.onresult = (event) => {
+            const transcript = event.results[event.results.length - 1][0].transcript.trim();
+            setInput(prev => prev + transcript); // Append transcript to input
+            setIsListening(false);
+            console.log("Speech recognition result:", transcript);
+        };
+
+        recognitionRef.current.onerror = (event) => {
+            console.error('Speech recognition error:', event.error);
+             let errorMsg = "Speech recognition error";
+             if (event.error === 'no-speech') errorMsg = "No speech detected.";
+             else if (event.error === 'audio-capture') errorMsg = "Audio capture failed (check microphone).";
+             else if (event.error === 'not-allowed') errorMsg = "Microphone access denied.";
+             else errorMsg = `Error: ${event.error}`;
+             setError(errorMsg);
+             toast({ variant: "destructive", title: "Voice Input Error", description: errorMsg });
+             setIsListening(false);
+        };
+
+        recognitionRef.current.onend = () => {
+            console.log("Speech recognition ended.");
+            if (isListening) { // Only set to false if it was manually stopped by user or error
+                 setIsListening(false);
+            }
+        };
+    } else {
+        setIsSpeechRecognitionSupported(false);
+        console.warn("Speech Recognition API not supported in this browser.");
+    }
+
+    // Cleanup function
+    return () => {
+        recognitionRef.current?.abort(); // Stop listening if component unmounts
+    };
+
+  }, [loadFromLocalStorage, fetchOpenRouterModels, createNewSession, calculateActiveModels, toast]); // Added toast dependency
 
 
    // Effect 1.5: Ensure an active session exists if needed
@@ -673,7 +742,7 @@ export default function ChatInterface() {
         behavior: 'smooth',
       });
     }
-  }, [messages, activeTab]);
+  }, [messages, activeTab, thinkingMessageId]); // Added thinkingMessageId dependency
 
 
   // --- Event Handlers ---
@@ -797,14 +866,27 @@ export default function ChatInterface() {
     if (selectedModel.provider === 'openrouter' && !openRouterApiKey && !process.env.NEXT_PUBLIC_OPENROUTER_API_KEY) { setError(`API key required for ${selectedModel.name}.`); toast({ variant: "destructive", title: "API Key Missing", description: "Set key in Settings." }); return; }
 
     setError(null);
+    const userMessageId = generateMessageId();
     const timestamp = Date.now();
     const userMessageText = input;
     const userMessageFile = selectedFile ? { name: selectedFile.name, dataUri: fileDataUri! } : undefined;
 
     const userMessage: Message = {
-      id: timestamp, sender: 'user', text: userMessageText, timestamp: timestamp,
+      id: userMessageId, sender: 'user', text: userMessageText, timestamp: timestamp,
       ...(userMessageFile && { file: userMessageFile }),
     };
+
+     // Placeholder for thinking message
+     const thinkingMsgId = generateMessageId();
+     const thinkingMessage: Message = {
+         id: thinkingMsgId,
+         sender: 'ai',
+         text: 'Thinking...',
+         timestamp: Date.now() + 1,
+         modelId: selectedModel.id,
+         thinkingSteps: [],
+     };
+     setThinkingMessageId(thinkingMsgId);
 
     let isFirstMessage = false;
     setChatSessions(prevSessions => {
@@ -813,7 +895,7 @@ export default function ChatInterface() {
                 isFirstMessage = session.messages.length === 0;
                 return {
                     ...session,
-                    messages: [...session.messages, userMessage],
+                    messages: [...session.messages, userMessage, thinkingMessage], // Add user and thinking message
                     lastModified: timestamp,
                     name: (session.name === DEFAULT_SESSION_NAME && isFirstMessage)
                           ? generateSessionName(userMessageText)
@@ -839,20 +921,43 @@ export default function ChatInterface() {
         ...(selectedModel.provider === 'openrouter' && { apiKey: openRouterApiKey || process.env.NEXT_PUBLIC_OPENROUTER_API_KEY }),
       };
 
-      const response = await smartAssistantPrompting(assistantInput);
+      // Callback to update thinking steps
+       const updateThinkingSteps = (steps: string[]) => {
+           setChatSessions(prevSessions => {
+               return prevSessions.map(session => {
+                   if (session.id === activeSessionId) {
+                       return {
+                           ...session,
+                           messages: session.messages.map(msg =>
+                               msg.id === thinkingMsgId ? { ...msg, thinkingSteps: steps } : msg
+                           )
+                       };
+                   }
+                   return session;
+               });
+           });
+       };
+
+
+      // Pass the callback to the flow
+      const response = await smartAssistantPrompting(assistantInput, updateThinkingSteps);
+
       const calculatedCost = calculateCost(selectedModel.id, userMessageText.length, response.response.length, !!userMessageFile);
 
       const aiMessage: Message = {
-        id: Date.now() + 1, sender: 'ai', text: response.response, cost: calculatedCost,
+        id: generateMessageId(), sender: 'ai', text: response.response, cost: calculatedCost,
         timestamp: Date.now(), modelId: selectedModel.id,
       };
 
+      // Replace thinking message with final AI response
       setChatSessions(prevSessions => {
           const updatedSessions = prevSessions.map(session => {
               if (session.id === activeSessionId) {
                   return {
                       ...session,
-                      messages: [...session.messages, aiMessage],
+                      messages: session.messages
+                                  .filter(msg => msg.id !== thinkingMsgId) // Remove thinking message
+                                  .concat(aiMessage), // Add final AI message
                       lastModified: Date.now(),
                       totalCost: (session.totalCost ?? 0) + calculatedCost,
                   };
@@ -862,6 +967,7 @@ export default function ChatInterface() {
           saveToLocalStorage(CHAT_SESSIONS_STORAGE_KEY, updatedSessions);
           return updatedSessions;
       });
+       setThinkingMessageId(null); // Clear thinking message ID
 
     } catch (err) {
       console.error("Error calling AI:", err);
@@ -869,16 +975,19 @@ export default function ChatInterface() {
       setError(`Failed to get response: ${errorMessage}`);
       const errorTimestamp = Date.now();
       const errorAiMessage: Message = {
-           id: errorTimestamp + 1, sender: 'ai', text: `Error: ${errorMessage}`, cost: 0,
+           id: generateMessageId(), sender: 'ai', text: `Error: ${errorMessage}`, cost: 0,
            timestamp: errorTimestamp, modelId: selectedModel.id, isError: true
       };
 
+       // Replace thinking message with error message
        setChatSessions(prevSessions => {
            const updatedSessions = prevSessions.map(session => {
                if (session.id === activeSessionId) {
                    return {
                        ...session,
-                       messages: [...session.messages, errorAiMessage],
+                       messages: session.messages
+                                  .filter(msg => msg.id !== thinkingMsgId) // Remove thinking message
+                                  .concat(errorAiMessage), // Add error message
                        lastModified: errorTimestamp,
                    };
                }
@@ -887,6 +996,7 @@ export default function ChatInterface() {
            saveToLocalStorage(CHAT_SESSIONS_STORAGE_KEY, updatedSessions);
            return updatedSessions;
        });
+       setThinkingMessageId(null); // Clear thinking message ID
        toast({ variant: "destructive", title: "AI Error", description: errorMessage });
     } finally {
       setIsSending(false);
@@ -898,8 +1008,41 @@ export default function ChatInterface() {
   };
 
   const handleMicClick = () => {
-    setIsRecording(!isRecording); setError("Voice input not implemented."); setTimeout(() => setError(null), 3000);
+     if (!isSpeechRecognitionSupported) {
+          setError("Voice input is not supported in your browser.");
+          toast({ variant: "destructive", title: "Unsupported Feature", description: "Try a different browser like Chrome."});
+          return;
+      }
+
+     if (isListening) {
+        recognitionRef.current?.stop();
+        setIsListening(false);
+        console.log("Speech recognition stopped manually.");
+     } else {
+         try {
+             recognitionRef.current?.start();
+             setIsListening(true);
+             setError(null); // Clear previous errors
+             console.log("Speech recognition started.");
+         } catch (e) {
+            console.error("Error starting speech recognition:", e);
+             if (e instanceof DOMException && e.name === 'InvalidStateError') {
+                 setError("Speech recognition is already active or starting.");
+                 // Attempt to reset if needed, though typically handled by onend/onerror
+                 recognitionRef.current?.abort();
+                 setTimeout(() => {
+                      recognitionRef.current?.start();
+                      setIsListening(true);
+                 }, 100);
+             } else {
+                 setError("Could not start voice input. Check microphone permissions.");
+                 toast({ variant: "destructive", title: "Voice Input Error", description: "Check microphone permissions." });
+             }
+             setIsListening(false);
+         }
+     }
   };
+
 
   // --- Memoized Values ---
   const filteredModels = React.useMemo(() => {
@@ -995,37 +1138,49 @@ export default function ChatInterface() {
                 {messages.map((message) => (
                   <div key={message.id} className={cn('flex items-start gap-3', message.sender === 'user' ? 'justify-end' : 'justify-start')}>
                     {message.sender === 'ai' && (<Avatar className="h-8 w-8 border shrink-0"><AvatarFallback><Bot size={16} /></AvatarFallback></Avatar>)}
-                    <div className={cn('max-w-[75%] rounded-lg p-3 shadow-sm relative group', message.sender === 'user' ? 'bg-primary text-primary-foreground ltr-text' : message.isError ? 'bg-destructive/10 border border-destructive/30 text-destructive ltr-text' : 'bg-secondary text-secondary-foreground', message.sender === 'ai' && !message.isError && (isPersian(message.text) ? 'rtl-text' : 'ltr-text'))}>
-                      {message.file && (<div className="mb-2 p-2 border rounded-md bg-muted/50 flex items-center gap-2 text-sm ltr-text"><Paperclip size={14} /><span>{message.file.name}</span></div>)}
-                      <p className="text-sm whitespace-pre-wrap">{message.text}</p>
-                      {message.sender === 'ai' && !message.isError && message.cost !== undefined && (
-                         <TooltipProvider delayDuration={100}>
-                            <Tooltip>
-                              <TooltipTrigger asChild><Badge variant="secondary" className="absolute -bottom-2 -right-2 opacity-70 group-hover:opacity-100 transition-opacity text-xs px-1.5 py-0.5 cursor-help">~{formatCurrency(message.cost)}</Badge></TooltipTrigger>
-                              <TooltipContent side="bottom" align="end"><p>Model: {getModelName(message.modelId)}</p><p>Est. Cost: {formatCurrency(message.cost)}</p></TooltipContent>
-                            </Tooltip>
-                         </TooltipProvider>
-                      )}
-                       {/* Display Tags for AI message */}
-                       {message.sender === 'ai' && !message.isError && activeSession?.tags && activeSession.tags.length > 0 && (
-                            <div className="mt-2 flex flex-wrap gap-1">
-                                {activeSession.tags.map(tag => (
-                                    <Badge key={tag} variant="outline" className="text-xs">{tag}</Badge>
-                                ))}
+                     <div className={cn('max-w-[75%] rounded-lg shadow-sm relative group', message.sender === 'user' ? 'bg-primary text-primary-foreground ltr-text p-3' : message.isError ? 'bg-destructive/10 border border-destructive/30 text-destructive ltr-text p-3' : message.id === thinkingMessageId ? 'bg-muted/30 border border-dashed border-accent p-0' : 'bg-secondary text-secondary-foreground p-3', message.sender === 'ai' && !message.isError && message.id !== thinkingMessageId && (isPersian(message.text) ? 'rtl-text' : 'ltr-text'))}>
+                        {/* Thinking Steps */}
+                         {message.id === thinkingMessageId && (
+                             <div className="p-3 space-y-2">
+                                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                     <Loader2 className="h-4 w-4 animate-spin" /> Thinking...
+                                 </div>
+                                {message.thinkingSteps && message.thinkingSteps.length > 0 && (
+                                    <div className="text-xs text-muted-foreground/80 space-y-1 max-h-24 overflow-y-auto border-t border-dashed border-accent pt-2 mt-2">
+                                         {message.thinkingSteps.map((step, index) => (<p key={index}>{step}</p>))}
+                                    </div>
+                                )}
                             </div>
-                       )}
+                         )}
+
+                        {/* Main Message Content (not shown for thinking message) */}
+                         {message.id !== thinkingMessageId && (
+                             <>
+                                 {message.file && (<div className="mb-2 p-2 border rounded-md bg-muted/50 flex items-center gap-2 text-sm ltr-text"><Paperclip size={14} /><span>{message.file.name}</span></div>)}
+                                 <p className="text-sm whitespace-pre-wrap">{message.text}</p>
+                                 {message.sender === 'ai' && !message.isError && message.cost !== undefined && (
+                                    <TooltipProvider delayDuration={100}>
+                                       <Tooltip>
+                                         <TooltipTrigger asChild><Badge variant="secondary" className="absolute -bottom-2 -right-2 opacity-70 group-hover:opacity-100 transition-opacity text-xs px-1.5 py-0.5 cursor-help">~{formatCurrency(message.cost)}</Badge></TooltipTrigger>
+                                         <TooltipContent side="bottom" align="end"><p>Model: {getModelName(message.modelId)}</p><p>Est. Cost: {formatCurrency(message.cost)}</p></TooltipContent>
+                                       </Tooltip>
+                                    </TooltipProvider>
+                                 )}
+                                  {/* Display Tags for AI message */}
+                                  {message.sender === 'ai' && !message.isError && activeSession?.tags && activeSession.tags.length > 0 && (
+                                       <div className="mt-2 flex flex-wrap gap-1">
+                                           {activeSession.tags.map(tag => (
+                                               <Badge key={tag} variant="outline" className="text-xs">{tag}</Badge>
+                                           ))}
+                                       </div>
+                                  )}
+                              </>
+                         )}
                     </div>
                      {message.sender === 'user' && (<Avatar className="h-8 w-8 border shrink-0"><AvatarFallback><User size={16} /></AvatarFallback></Avatar>)}
                   </div>
                 ))}
-                 {isSending && (
-                     <div className="flex items-start gap-3 justify-start">
-                        <Avatar className="h-8 w-8 border shrink-0"><AvatarFallback><Bot size={16} /></AvatarFallback></Avatar>
-                        <div className="max-w-[75%] rounded-lg p-3 shadow-sm bg-secondary text-secondary-foreground space-y-2">
-                            <Skeleton className="h-4 w-[250px]" /> <Skeleton className="h-4 w-[200px]" />
-                        </div>
-                    </div>
-                 )}
+                 {/* Remove explicit sending skeleton, handled by thinking message */}
               </div>
             </ScrollArea>
           </TabsContent>
@@ -1385,10 +1540,27 @@ export default function ChatInterface() {
                 <Paperclip className="h-5 w-5" />
               </Button>
               <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" accept=".txt,.pdf,.jpg,.jpeg,.png,.webp,.md" disabled={selectedModel.provider === 'openrouter'} />
-               <Textarea placeholder="Type message..." value={input} onChange={(e) => setInput(e.target.value)} onKeyPress={handleKeyPress} className="flex-1 resize-none min-h-[40px] max-h-[150px] text-sm" rows={1} disabled={isSending || !activeSessionId} dir={isPersian(input) ? 'rtl' : 'ltr'} />
-              <Button variant="ghost" size="icon" className={cn("text-muted-foreground hover:text-accent shrink-0", isRecording && "text-destructive")} onClick={handleMicClick} aria-label="Use microphone" disabled={isSending || !activeSessionId}>
-                <Mic className="h-5 w-5" />
-              </Button>
+               <Textarea placeholder={isListening ? "Listening..." : "Type message or use microphone..."} value={input} onChange={(e) => setInput(e.target.value)} onKeyPress={handleKeyPress} className="flex-1 resize-none min-h-[40px] max-h-[150px] text-sm" rows={1} disabled={isSending || !activeSessionId} dir={isPersian(input) ? 'rtl' : 'ltr'} />
+              <TooltipProvider delayDuration={100}>
+                 <Tooltip>
+                      <TooltipTrigger asChild>
+                           <Button
+                             variant="ghost"
+                             size="icon"
+                             className={cn("text-muted-foreground hover:text-accent shrink-0", isListening && "text-destructive animate-pulse")}
+                             onClick={handleMicClick}
+                             aria-label={isListening ? "Stop listening" : "Use microphone"}
+                             disabled={isSending || !activeSessionId || !isSpeechRecognitionSupported}
+                             title={!isSpeechRecognitionSupported ? "Voice input not supported" : isListening ? "Stop listening" : "Start voice input"}
+                           >
+                             <Mic className="h-5 w-5" />
+                           </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top">
+                         <p>{!isSpeechRecognitionSupported ? "Voice input not supported" : isListening ? "Stop listening" : "Start voice input"}</p>
+                       </TooltipContent>
+                 </Tooltip>
+              </TooltipProvider>
               <Button size="icon" onClick={handleSend} disabled={isSending || !activeSessionId || (!input.trim() && !selectedFile) || (selectedFile && selectedModel.provider === 'openrouter') || (selectedModel.provider === 'openrouter' && !openRouterApiKey && !process.env.NEXT_PUBLIC_OPENROUTER_API_KEY)} aria-label="Send message" className="bg-accent hover:bg-accent/90 text-accent-foreground shrink-0" title={!activeSessionId ? "Create a new chat first" : selectedFile && selectedModel.provider === 'openrouter' ? `Cannot send file with ${selectedModel.name}` : (selectedModel.provider === 'openrouter' && !openRouterApiKey && !process.env.NEXT_PUBLIC_OPENROUTER_API_KEY) ? 'OpenRouter API key required' : "Send message"}>
                {isSending ? <Loader2 className="h-5 w-5 animate-spin" /> : <Send className="h-5 w-5" />}
               </Button>
