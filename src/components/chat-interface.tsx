@@ -1,4 +1,5 @@
 
+
 'use client';
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
@@ -880,6 +881,25 @@ export default function ChatInterface() {
         }
     };
 
+  // Client-side function to update thinking steps
+   const updateThinkingSteps = (steps: string[]) => {
+        if (!activeSessionId || !thinkingMessageId) return; // Ensure we have an active session and thinking message
+
+        setChatSessions(prevSessions => {
+            return prevSessions.map(session => {
+                if (session.id === activeSessionId) {
+                    return {
+                        ...session,
+                        messages: session.messages.map(msg =>
+                            msg.id === thinkingMessageId ? { ...msg, thinkingSteps: steps } : msg
+                        )
+                    };
+                }
+                return session;
+            });
+        });
+    };
+
 
   const handleSend = useCallback(async () => {
     if (!activeSessionId) {
@@ -904,13 +924,16 @@ export default function ChatInterface() {
 
      // Placeholder for thinking message
      const thinkingMsgId = generateMessageId();
+     const initialThinkingSteps = selectedModel.provider === 'openrouter'
+         ? ["Preparing request for OpenRouter..."]
+         : ["Preparing request for Google AI..."];
      const thinkingMessage: Message = {
          id: thinkingMsgId,
          sender: 'ai',
          text: 'Thinking...',
          timestamp: Date.now() + 1,
          modelId: selectedModel.id,
-         thinkingSteps: [],
+         thinkingSteps: initialThinkingSteps,
      };
      setThinkingMessageId(thinkingMsgId);
 
@@ -947,26 +970,21 @@ export default function ChatInterface() {
         ...(selectedModel.provider === 'openrouter' && { apiKey: openRouterApiKey || process.env.NEXT_PUBLIC_OPENROUTER_API_KEY }),
       };
 
-      // Callback to update thinking steps
-       const updateThinkingSteps = (steps: string[]) => {
-           setChatSessions(prevSessions => {
-               return prevSessions.map(session => {
-                   if (session.id === activeSessionId) {
-                       return {
-                           ...session,
-                           messages: session.messages.map(msg =>
-                               msg.id === thinkingMsgId ? { ...msg, thinkingSteps: steps } : msg
-                           )
-                       };
-                   }
-                   return session;
-               });
-           });
-       };
+       // Update thinking steps after sending (client-side)
+       if (selectedModel.provider === 'openrouter') {
+           updateThinkingSteps(["Request sent, awaiting response..."]);
+       } else {
+           // Google AI/Genkit might have its own streaming/tool use logic handled differently
+           // For now, just indicate request sent
+           updateThinkingSteps(["Request sent, processing..."]);
+       }
 
+      // Call the server function (no callback passed)
+      const response = await smartAssistantPrompting(assistantInput);
 
-      // Pass the callback to the flow
-      const response = await smartAssistantPrompting(assistantInput, updateThinkingSteps);
+       // Update thinking steps before processing response (client-side)
+       updateThinkingSteps(["Received response, processing..."]);
+
 
       const calculatedCost = calculateCost(selectedModel.id, userMessageText.length, response.response.length, !!userMessageFile);
 
@@ -1603,6 +1621,3 @@ export default function ChatInterface() {
     </Card>
   );
 }
-
-
-    

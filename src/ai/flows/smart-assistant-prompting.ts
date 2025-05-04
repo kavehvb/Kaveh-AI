@@ -29,16 +29,15 @@ export type SmartAssistantPromptingInput = z.infer<typeof SmartAssistantPromptin
 // Output schema remains the same
 const SmartAssistantPromptingOutputSchema = z.object({
   response: z.string().describe('The response from the AI model.'),
+  // Add stream information if needed in the future
 });
 export type SmartAssistantPromptingOutput = z.infer<typeof SmartAssistantPromptingOutputSchema>;
 
-// Type for the thinking steps callback
-export type ThinkingStepsCallback = (steps: string[]) => void;
+// Removed ThinkingStepsCallback type as it's a client-side concept
 
-// Wrapper function now directly contains the logic, accepting the optional callback
+// Wrapper function now directly contains the logic, no longer accepts callback
 export async function smartAssistantPrompting(
-  input: SmartAssistantPromptingInput,
-  thinkingStepsCallback?: ThinkingStepsCallback // Optional callback
+  input: SmartAssistantPromptingInput
 ): Promise<SmartAssistantPromptingOutput> {
 
   // Validate input using Zod schema
@@ -71,8 +70,7 @@ export async function smartAssistantPrompting(
     }
 
     try {
-        thinkingStepsCallback?.(["Preparing request for OpenRouter..."]); // Report initial step
-
+        // Removed thinkingStepsCallback call
         console.log(`Sending request to OpenRouter with model: ${openRouterModelId}`);
         const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
             method: "POST",
@@ -86,13 +84,12 @@ export async function smartAssistantPrompting(
             body: JSON.stringify({
             model: openRouterModelId,
             messages: [{ role: "user", content: input.prompt }],
-            // Add stream: true if you want to handle streaming responses for thinking steps
-            // stream: true, // Example: Enable streaming if needed
-            // Add other parameters like temperature, max_tokens if desired
+            // OpenRouter non-streaming for now
+            // stream: false, // Ensure streaming is off unless handled
             })
         });
 
-        thinkingStepsCallback?.(["Request sent, awaiting response..."]); // Report next step
+        // Removed thinkingStepsCallback call
 
       if (!response.ok) {
         let errorBody = await response.text();
@@ -110,7 +107,7 @@ export async function smartAssistantPrompting(
       }
 
       // --- Handling Non-Streaming Response ---
-       thinkingStepsCallback?.(["Received response, processing..."]);
+       // Removed thinkingStepsCallback call
        const data = await response.json();
        console.log("OpenRouter Raw Success Response:", data);
 
@@ -121,18 +118,8 @@ export async function smartAssistantPrompting(
          throw new Error("Failed to parse response content from OpenRouter model. The response structure might be unexpected.");
        }
 
-       thinkingStepsCallback?.(["Response processed."]); // Final step before returning
+       // Removed thinkingStepsCallback call
        return { response: responseContent };
-
-     // --- TODO: Implement Streaming Response Handling for OpenRouter if needed ---
-     /*
-     if (response.body) {
-         // ... streaming logic ...
-         // Call thinkingStepsCallback inside the stream processing loop
-     } else {
-         throw new Error("Response body is null");
-     }
-     */
 
     } catch (error) {
         console.error("Error during OpenRouter API call or processing:", error);
@@ -159,58 +146,31 @@ export async function smartAssistantPrompting(
         const googleAiModelId = input.modelId;
         console.log(`Using Genkit with Google AI model: ${googleAiModelId}`);
 
-        thinkingStepsCallback?.(["Preparing request for Google AI..."]);
+        // Removed thinkingStepsCallback call
 
-        // Use ai.generateStream for potential thinking steps (tool use)
-        const { stream, responsePromise } = ai.generateStream({
+        // Call ai.generate directly for a simple response
+        // If streaming is needed for Google AI to show tool use *during* generation,
+        // the client needs to handle the ai.generateStream response.
+        // For now, simplify to ai.generate for consistency with OpenRouter non-streaming.
+
+        const response = await ai.generate({
             model: googleAiModelId,
             prompt: promptParts,
-            // No output schema here, we process the stream manually
-            // output: { schema: SmartAssistantPromptingOutputSchema },
+            // tools: [] // Add tools here if needed
         });
 
-        thinkingStepsCallback?.(["Request sent, awaiting stream..."]);
+        // Removed thinkingStepsCallback call
 
-        let finalResponseText = "";
-        let thinkingSteps: string[] = ["Processing stream..."]; // Initial thinking step
+        const responseText = response.text;
 
-        for await (const chunk of stream) {
-             if (chunk.text) { // Check if text content exists in the chunk
-                finalResponseText += chunk.text; // Accumulate text content
-            }
-            // Check for tool calls/requests as thinking steps
-             if (chunk.isToolRequest) {
-                 const toolName = chunk.toolRequest?.name;
-                 if (toolName) {
-                     thinkingSteps.push(`Using tool: ${toolName}`);
-                     thinkingStepsCallback?.([...thinkingSteps]); // Update UI with new step
-                 }
-             }
-             // Check for tool call responses as thinking steps
-             if (chunk.isToolResponse) {
-                  const toolName = chunk.toolResponse?.ref; // Or access name differently if needed
-                  if (toolName) {
-                     thinkingSteps.push(`Received response from tool: ${toolName}`);
-                      thinkingStepsCallback?.([...thinkingSteps]); // Update UI
-                 }
-             }
-             // Add other chunk types to check if needed (e.g., specific metadata)
+        if (typeof responseText !== 'string') {
+            console.error("Google AI model via Genkit did not yield a valid response string:", response);
+            throw new Error('Google AI model did not produce a valid response string.');
         }
 
-        // Wait for the final response object to ensure completion, though we constructed the text from the stream
-        const finalResponseObject = await responsePromise;
-        thinkingStepsCallback?.(["Stream finished, processing final response."]);
-
-        // We use the text accumulated from the stream, but log the final object for debugging
-        console.log("Genkit final response object:", finalResponseObject);
-
-        if (typeof finalResponseText !== 'string') {
-         console.error("Google AI model via Genkit did not yield a valid response string from stream:", finalResponseText);
-         throw new Error('Google AI model did not produce a valid response string.');
-       }
-
-        thinkingStepsCallback?.(["Response processed."]); // Final step
-        return { response: finalResponseText };
+        console.log("Genkit final response object:", response);
+        // Removed thinkingStepsCallback call
+        return { response: responseText };
 
       } catch (error) {
         console.error("Error calling Google AI model via Genkit:", error);
@@ -229,23 +189,9 @@ export async function smartAssistantPrompting(
   }
 }
 
-
-// ---- Removed ai.defineFlow wrapper ----
+// ---- Removed problematic commented-out Genkit flow definition ----
 /*
-const smartAssistantPromptingFlow = ai.defineFlow<
-  typeof SmartAssistantPromptingInputSchema,
-  typeof SmartAssistantPromptingOutputSchema
->({
-  name: 'smartAssistantPromptingFlow',
-  inputSchema: SmartAssistantPromptingInputSchema,
-  outputSchema: SmartAssistantPromptingOutputSchema,
-},
-async (input, flowState) => {
-  // The logic previously here is now in the exported `smartAssistantPrompting` function
-  // This avoids passing the callback function through Genkit's flow state,
-  // which seems to cause issues with client/server context.
-  // The `smartAssistantPrompting` function now directly handles the logic.
-  throw new Error("Flow should not be called directly. Use the exported smartAssistantPrompting function.");
 
-});
+// .... (removed the entire commented block that started with "Define the Genkit flow...")
+
 */
