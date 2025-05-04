@@ -35,36 +35,23 @@ export type SmartAssistantPromptingOutput = z.infer<typeof SmartAssistantPrompti
 // Type for the thinking steps callback
 export type ThinkingStepsCallback = (steps: string[]) => void;
 
-// Wrapper function now accepts the optional callback
+// Wrapper function now directly contains the logic, accepting the optional callback
 export async function smartAssistantPrompting(
   input: SmartAssistantPromptingInput,
   thinkingStepsCallback?: ThinkingStepsCallback // Optional callback
 ): Promise<SmartAssistantPromptingOutput> {
-  // Pass the callback down to the flow
-  return smartAssistantPromptingFlow(input, thinkingStepsCallback);
-}
 
-// Define the Genkit prompt specifically for Google AI models that support it
-// Note: This prompt is now used within ai.generate for Google models, not directly called.
-const googleAIPromptTemplate = `{{#if fileDataUri}}Analyze the provided file and answer the prompt based on it.
-Prompt: {{{prompt}}}
-File: {{media url=fileDataUri}}
-{{else}}Answer the following prompt:
-{{{prompt}}}
-{{/if}}`;
+  // Validate input using Zod schema
+  try {
+    SmartAssistantPromptingInputSchema.parse(input);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      console.error("Invalid input:", error.errors);
+      throw new Error(`Invalid input: ${error.errors.map(e => `${e.path.join('.')} - ${e.message}`).join(', ')}`);
+    }
+    throw error; // Re-throw unexpected errors
+  }
 
-
-// Define the flow that handles routing, now accepting the callback
-const smartAssistantPromptingFlow = ai.defineFlow<
-  typeof SmartAssistantPromptingInputSchema,
-  typeof SmartAssistantPromptingOutputSchema
->({
-  name: 'smartAssistantPromptingFlow',
-  inputSchema: SmartAssistantPromptingInputSchema,
-  outputSchema: SmartAssistantPromptingOutputSchema,
-},
-async (input, flowState) => { // Accept flowState to potentially pass callback via context if needed, or just pass directly
-   const thinkingStepsCallback = flowState?.callback as ThinkingStepsCallback | undefined; // Example of retrieving callback if passed via state
 
   if (input.modelId.startsWith('openrouter/')) {
     // --- Handle OpenRouter Models ---
@@ -137,48 +124,11 @@ async (input, flowState) => { // Accept flowState to potentially pass callback v
        thinkingStepsCallback?.(["Response processed."]); // Final step before returning
        return { response: responseContent };
 
-     // --- Handling Streaming Response (Example) ---
+     // --- TODO: Implement Streaming Response Handling for OpenRouter if needed ---
      /*
      if (response.body) {
-         thinkingStepsCallback?.(["Received streaming response..."]);
-         const reader = response.body.getReader();
-         const decoder = new TextDecoder();
-         let result = '';
-         let thinkingSteps: string[] = []; // Accumulate steps from stream
-
-         while (true) {
-             const { done, value } = await reader.read();
-             if (done) break;
-             const chunk = decoder.decode(value, { stream: true });
-             // Process the chunk - OpenRouter streaming format might vary, check their docs
-             // Example: Assuming server-sent events (SSE) format like: data: {"choices": [...]}
-             const lines = chunk.split('\n');
-             for (const line of lines) {
-                 if (line.startsWith('data: ')) {
-                     try {
-                         const jsonData = JSON.parse(line.substring(6));
-                         const delta = jsonData.choices?.[0]?.delta?.content;
-                         if (delta) {
-                             result += delta;
-                             // Example: Treat each delta as a "thinking step" if needed
-                             // thinkingSteps.push(`Received chunk: ${delta.substring(0, 20)}...`);
-                             // thinkingStepsCallback?.(thinkingSteps);
-                         }
-                         // Look for specific thinking/tool use indicators if provided by the model
-                         const toolCalls = jsonData.choices?.[0]?.delta?.tool_calls;
-                         if (toolCalls) {
-                              thinkingSteps.push(`Model is using tool: ${toolCalls[0]?.function?.name}`);
-                              thinkingStepsCallback?.(thinkingSteps);
-                         }
-
-                     } catch (e) {
-                         console.warn("Could not parse stream chunk:", line, e);
-                     }
-                 }
-             }
-         }
-         thinkingStepsCallback?.(["Stream finished, finalizing response."]);
-         return { response: result };
+         // ... streaming logic ...
+         // Call thinkingStepsCallback inside the stream processing loop
      } else {
          throw new Error("Response body is null");
      }
@@ -215,18 +165,18 @@ async (input, flowState) => { // Accept flowState to potentially pass callback v
         const { stream, responsePromise } = ai.generateStream({
             model: googleAiModelId,
             prompt: promptParts,
-            output: { schema: SmartAssistantPromptingOutputSchema },
+            // No output schema here, we process the stream manually
+            // output: { schema: SmartAssistantPromptingOutputSchema },
         });
 
         thinkingStepsCallback?.(["Request sent, awaiting stream..."]);
 
-        let finalOutput: SmartAssistantPromptingOutput | null = null;
-        let accumulatedText = "";
+        let finalResponseText = "";
         let thinkingSteps: string[] = ["Processing stream..."]; // Initial thinking step
 
         for await (const chunk of stream) {
-             if (chunk.content) {
-                accumulatedText += chunk.text; // Accumulate text content
+             if (chunk.text) { // Check if text content exists in the chunk
+                finalResponseText += chunk.text; // Accumulate text content
             }
             // Check for tool calls/requests as thinking steps
              if (chunk.isToolRequest) {
@@ -244,24 +194,28 @@ async (input, flowState) => { // Accept flowState to potentially pass callback v
                       thinkingStepsCallback?.([...thinkingSteps]); // Update UI
                  }
              }
+             // Add other chunk types to check if needed (e.g., specific metadata)
         }
 
-        // Wait for the final response object after the stream is done
-        const output = await responsePromise;
+        // Wait for the final response object to ensure completion, though we constructed the text from the stream
+        const finalResponseObject = await responsePromise;
         thinkingStepsCallback?.(["Stream finished, processing final response."]);
 
+        // We use the text accumulated from the stream, but log the final object for debugging
+        console.log("Genkit final response object:", finalResponseObject);
 
-       if (!output || typeof output.response !== 'string') {
-         console.error("Google AI model via Genkit did not return a valid output or response string:", output);
-         throw new Error('Google AI model did not return a valid response.');
+        if (typeof finalResponseText !== 'string') {
+         console.error("Google AI model via Genkit did not yield a valid response string from stream:", finalResponseText);
+         throw new Error('Google AI model did not produce a valid response string.');
        }
 
         thinkingStepsCallback?.(["Response processed."]); // Final step
-        return output;
+        return { response: finalResponseText };
 
       } catch (error) {
         console.error("Error calling Google AI model via Genkit:", error);
          if (error instanceof Error) {
+             // Check for specific Genkit/API errors if needed
              throw error;
         } else {
             throw new Error(`An unexpected issue occurred while communicating with Google AI via Genkit: ${String(error)}`);
@@ -273,4 +227,25 @@ async (input, flowState) => { // Accept flowState to potentially pass callback v
     console.error(`Unsupported model ID format: ${input.modelId}`);
     throw new Error(`Unsupported model provider for ID: ${input.modelId}. Must start with "googleai/" or "openrouter/".`);
   }
+}
+
+
+// ---- Removed ai.defineFlow wrapper ----
+/*
+const smartAssistantPromptingFlow = ai.defineFlow<
+  typeof SmartAssistantPromptingInputSchema,
+  typeof SmartAssistantPromptingOutputSchema
+>({
+  name: 'smartAssistantPromptingFlow',
+  inputSchema: SmartAssistantPromptingInputSchema,
+  outputSchema: SmartAssistantPromptingOutputSchema,
+},
+async (input, flowState) => {
+  // The logic previously here is now in the exported `smartAssistantPrompting` function
+  // This avoids passing the callback function through Genkit's flow state,
+  // which seems to cause issues with client/server context.
+  // The `smartAssistantPrompting` function now directly handles the logic.
+  throw new Error("Flow should not be called directly. Use the exported smartAssistantPrompting function.");
+
 });
+*/
