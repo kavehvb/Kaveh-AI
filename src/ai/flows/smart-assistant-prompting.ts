@@ -81,44 +81,72 @@ export async function smartAssistantPrompting(
               headers: {
               "Authorization": `Bearer ${apiKey}`,
               "Content-Type": "application/json",
-              // Optional: Add 'HTTP-Referer' and 'X-Title' headers
-              // "HTTP-Referer": YOUR_SITE_URL,
-              // "X-Title": YOUR_SITE_NAME,
+              // Optional: Add 'HTTP-Referer' and 'X-Title' headers per OpenRouter recommendation
+              // "HTTP-Referer": YOUR_SITE_URL, // Replace with actual site URL if available
+              // "X-Title": YOUR_SITE_NAME, // Replace with actual site name if available
               },
               body: JSON.stringify({
               model: openRouterModelId,
               messages: [{ role: "user", content: input.prompt }],
-              // OpenRouter non-streaming for now
-              // stream: false, // Ensure streaming is off unless handled
+              // Ensure non-streaming for this simple implementation
+              // stream: false, // OpenRouter defaults to non-streaming if not specified
+              // Consider adding 'max_tokens' or other parameters if needed
+              // max_tokens: 1024,
               })
           });
 
+        let responseBodyText = await response.text(); // Read body once as text
+        console.log("OpenRouter Raw Response Status:", response.status);
+        console.log("OpenRouter Raw Response Body:", responseBodyText);
+
+
         if (!response.ok) {
-          let errorBody = await response.text();
           let errorMessage = `OpenRouter API request failed with status ${response.status}`;
-          console.error("OpenRouter API Error Status:", response.status);
-          console.error("OpenRouter API Error Response Body:", errorBody);
           try {
-              const errorJson = JSON.parse(errorBody);
-              // Use optional chaining and provide fallbacks
-              errorMessage = errorJson?.error?.message ?? errorJson?.detail ?? JSON.stringify(errorJson) ?? errorBody;
+              // Try parsing as JSON, which is common for errors
+              const errorJson = JSON.parse(responseBodyText);
+              // Extract message using optional chaining and fallbacks
+              errorMessage = errorJson?.error?.message ?? errorJson?.detail ?? JSON.stringify(errorJson) ?? responseBodyText;
           } catch (parseError) {
-               errorMessage = errorBody || errorMessage; // Use errorBody if JSON parsing fails
+               errorMessage = responseBodyText || errorMessage; // Use raw text if JSON parsing fails
           }
           console.error("Detailed OpenRouter Error:", errorMessage);
-          // Throw a more specific error message including the model ID
+          // Throw a specific error message including the model ID
           throw new Error(`OpenRouter API Error for model ${openRouterModelId}: ${response.status} - ${errorMessage}`);
         }
 
-        // --- Handling Non-Streaming Response ---
-         const data = await response.json();
-         console.log("OpenRouter Raw Success Response:", data);
+        // --- Handling Non-Streaming Success Response ---
+         let data;
+         try {
+            data = JSON.parse(responseBodyText); // Parse the successful response body
+            console.log("OpenRouter Parsed Success Response:", data);
+         } catch (parseError) {
+             console.error("Failed to parse successful OpenRouter response JSON:", parseError);
+             console.error("Raw successful response body was:", responseBodyText);
+             throw new Error(`Failed to parse successful response from OpenRouter model ${openRouterModelId}. Raw response: ${responseBodyText.substring(0, 100)}...`);
+         }
 
-         const responseContent = data.choices?.[0]?.message?.content;
 
+         // Extract the response content - anticipating potential variations
+         const choice = data?.choices?.[0];
+         let responseContent = choice?.message?.content; // Standard location
+
+         // Fallback: Check if the response itself is directly the content (less common but possible)
+         if (typeof responseContent !== 'string' && typeof choice?.text === 'string') {
+             console.warn("OpenRouter response content found in choices[0].text instead of choices[0].message.content");
+             responseContent = choice.text;
+         }
+
+         // Fallback: Check if the entire response data might be the string (highly unlikely for chat completions)
+         if (typeof responseContent !== 'string' && typeof data === 'string') {
+            console.warn("OpenRouter response content appears to be the entire data payload string.");
+            responseContent = data;
+         }
+
+         // Final check if we have a valid string
          if (typeof responseContent !== 'string') {
-           console.error("Unexpected OpenRouter response structure or missing content:", data);
-           throw new Error("Failed to parse response content from OpenRouter model. The response structure might be unexpected.");
+           console.error("Unexpected OpenRouter response structure or missing text content:", data);
+           throw new Error(`Failed to extract valid text response content from OpenRouter model ${openRouterModelId}. Check the console logs for the raw response structure.`);
          }
 
          console.log("OpenRouter final response content:", responseContent);
@@ -147,28 +175,31 @@ export async function smartAssistantPrompting(
           promptParts.push({ media: { url: input.fileDataUri } });
       } else {
            console.log("Adding text-only prompt to Google AI prompt parts.");
-          promptParts.push({ text: `Answer the following prompt:\n${input.prompt}` });
+          promptParts.push({ text: input.prompt }); // Simplified text prompt
       }
 
        try {
           const googleAiModelId = input.modelId;
           console.log(`Using Genkit with Google AI model: ${googleAiModelId}`);
+           console.log("Prompt Parts:", JSON.stringify(promptParts, null, 2)); // Log the parts being sent
 
           // Call ai.generate directly for a simple response
-          const response = await ai.generate({
+          const genkitResponse = await ai.generate({
               model: googleAiModelId,
               prompt: promptParts,
-              // tools: [] // Add tools here if needed
+              // No explicit tools defined here, model decides based on prompt
+              // tools: []
           });
 
-          const responseText = response.text;
+           console.log("Genkit Raw Response Object:", JSON.stringify(genkitResponse, null, 2)); // Log the full Genkit response
+
+          const responseText = genkitResponse.text; // Access text directly in Genkit v1.x
 
           if (typeof responseText !== 'string') {
-              console.error("Google AI model via Genkit did not yield a valid response string:", response);
+              console.error("Google AI model via Genkit did not yield a valid response string:", genkitResponse);
               throw new Error('Google AI model did not produce a valid response string.');
           }
 
-          console.log("Genkit final response object:", response);
           console.log("Google AI final response text:", responseText);
           return { response: responseText };
 
@@ -201,11 +232,3 @@ export async function smartAssistantPrompting(
      }
   }
 }
-
-// ---- Removed problematic commented-out Genkit flow definition ----
-/*
-
-// .... (removed the entire commented block that started with "Define the Genkit flow...")
-
-*/
-
