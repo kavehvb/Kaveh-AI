@@ -1,5 +1,6 @@
 
 
+
 'use client';
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
@@ -142,7 +143,14 @@ const calculateCost = (modelId: string, inputLength: number, outputLength: numbe
   } else if (modelId.startsWith('googleai/gemini-2.0-flash')) {
       inputCostPerChar = 0.000001; outputCostPerChar = 0.000002;
   } else if (modelId.startsWith('openrouter/')) {
-      inputCostPerChar = 0.000002; outputCostPerChar = 0.000006;
+      // Example: Using OpenRouter's published pricing (adjust as needed per model)
+      // Mistral 7B: $0.07 / 1M input, $0.25 / 1M output tokens
+      // Roughly: 1 token ~ 4 chars
+      inputCostPerChar = (0.07 / 1_000_000) / 4; // ~$0.0000000175 per char
+      outputCostPerChar = (0.25 / 1_000_000) / 4; // ~$0.0000000625 per char
+      // Use defaults as a fallback or more specific logic if needed
+      // inputCostPerChar = COST_PER_INPUT_CHAR_DEFAULT;
+      // outputCostPerChar = COST_PER_OUTPUT_CHAR_DEFAULT;
   }
 
   if (hasFile && modelId.startsWith('googleai/')) { fileCost = COST_PER_FILE_ANALYSIS_GOOGLE; }
@@ -678,8 +686,11 @@ export default function ChatInterface() {
              else if (event.error === 'audio-capture') errorMsg = "Audio capture failed (check microphone).";
              else if (event.error === 'not-allowed') errorMsg = "Microphone access denied.";
              else errorMsg = `Error: ${event.error}`;
-             setError(errorMsg);
-             toast({ variant: "destructive", title: "Voice Input Error", description: errorMsg });
+             // Only show toast for critical errors, not for 'no-speech'
+            if (event.error !== 'no-speech') {
+                 setError(errorMsg);
+                 toast({ variant: "destructive", title: "Voice Input Error", description: errorMsg });
+            }
              setIsListening(false);
         };
 
@@ -881,25 +892,6 @@ export default function ChatInterface() {
         }
     };
 
-  // Client-side function to update thinking steps
-   const updateThinkingSteps = (steps: string[]) => {
-        if (!activeSessionId || !thinkingMessageId) return; // Ensure we have an active session and thinking message
-
-        setChatSessions(prevSessions => {
-            return prevSessions.map(session => {
-                if (session.id === activeSessionId) {
-                    return {
-                        ...session,
-                        messages: session.messages.map(msg =>
-                            msg.id === thinkingMessageId ? { ...msg, thinkingSteps: steps } : msg
-                        )
-                    };
-                }
-                return session;
-            });
-        });
-    };
-
 
   const handleSend = useCallback(async () => {
     if (!activeSessionId) {
@@ -924,18 +916,16 @@ export default function ChatInterface() {
 
      // Placeholder for thinking message
      const thinkingMsgId = generateMessageId();
-     const initialThinkingSteps = selectedModel.provider === 'openrouter'
-         ? ["Preparing request for OpenRouter..."]
-         : ["Preparing request for Google AI..."];
+     const initialThinkingSteps = ["Preparing request..."]; // Generic initial step
      const thinkingMessage: Message = {
          id: thinkingMsgId,
          sender: 'ai',
-         text: 'Thinking...',
-         timestamp: Date.now() + 1,
+         text: 'Thinking...', // Placeholder text
+         timestamp: Date.now() + 1, // Ensure it appears after user message
          modelId: selectedModel.id,
          thinkingSteps: initialThinkingSteps,
      };
-     setThinkingMessageId(thinkingMsgId);
+     setThinkingMessageId(thinkingMsgId); // Set the ID of the thinking message
 
     let isFirstMessage = false;
     setChatSessions(prevSessions => {
@@ -970,27 +960,19 @@ export default function ChatInterface() {
         ...(selectedModel.provider === 'openrouter' && { apiKey: openRouterApiKey || process.env.NEXT_PUBLIC_OPENROUTER_API_KEY }),
       };
 
-       // Update thinking steps after sending (client-side)
-       if (selectedModel.provider === 'openrouter') {
-           updateThinkingSteps(["Request sent, awaiting response..."]);
-       } else {
-           // Google AI/Genkit might have its own streaming/tool use logic handled differently
-           // For now, just indicate request sent
-           updateThinkingSteps(["Request sent, processing..."]);
-       }
 
       // Call the server function (no callback passed)
       const response = await smartAssistantPrompting(assistantInput);
 
-       // Update thinking steps before processing response (client-side)
-       updateThinkingSteps(["Received response, processing..."]);
-
-
       const calculatedCost = calculateCost(selectedModel.id, userMessageText.length, response.response.length, !!userMessageFile);
 
       const aiMessage: Message = {
-        id: generateMessageId(), sender: 'ai', text: response.response, cost: calculatedCost,
-        timestamp: Date.now(), modelId: selectedModel.id,
+        id: generateMessageId(), // Use a NEW ID for the final response
+        sender: 'ai',
+        text: response.response,
+        cost: calculatedCost,
+        timestamp: Date.now(),
+        modelId: selectedModel.id,
       };
 
       // Replace thinking message with final AI response
@@ -1011,7 +993,7 @@ export default function ChatInterface() {
           saveToLocalStorage(CHAT_SESSIONS_STORAGE_KEY, updatedSessions);
           return updatedSessions;
       });
-       setThinkingMessageId(null); // Clear thinking message ID
+
 
     } catch (err) {
       console.error("Error calling AI:", err);
@@ -1019,7 +1001,8 @@ export default function ChatInterface() {
       setError(`Failed to get response: ${errorMessage}`);
       const errorTimestamp = Date.now();
       const errorAiMessage: Message = {
-           id: generateMessageId(), sender: 'ai', text: `Error: ${errorMessage}`, cost: 0,
+           id: generateMessageId(), // Use a NEW ID for the error message
+           sender: 'ai', text: `Error: ${errorMessage}`, cost: 0,
            timestamp: errorTimestamp, modelId: selectedModel.id, isError: true
       };
 
@@ -1040,12 +1023,13 @@ export default function ChatInterface() {
            saveToLocalStorage(CHAT_SESSIONS_STORAGE_KEY, updatedSessions);
            return updatedSessions;
        });
-       setThinkingMessageId(null); // Clear thinking message ID
        toast({ variant: "destructive", title: "AI Error", description: errorMessage });
     } finally {
       setIsSending(false);
+      setThinkingMessageId(null); // Clear thinking message ID regardless of success/error
     }
   }, [activeSessionId, input, selectedFile, fileDataUri, selectedModel, openRouterApiKey, toast, chatSessions, saveToLocalStorage]);
+
 
   const handleKeyPress = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); handleSend(); }
@@ -1182,18 +1166,19 @@ export default function ChatInterface() {
                 {messages.map((message) => (
                   <div key={message.id} className={cn('flex items-start gap-3', message.sender === 'user' ? 'justify-end' : 'justify-start')}>
                     {message.sender === 'ai' && (<Avatar className="h-8 w-8 border shrink-0"><AvatarFallback><Bot size={16} /></AvatarFallback></Avatar>)}
-                     <div className={cn('max-w-[75%] rounded-lg shadow-sm relative group', message.sender === 'user' ? 'bg-primary text-primary-foreground ltr-text p-3' : message.isError ? 'bg-destructive/10 border border-destructive/30 text-destructive ltr-text p-3' : message.id === thinkingMessageId ? 'bg-muted/30 border border-dashed border-accent p-0' : 'bg-secondary text-secondary-foreground p-3', message.sender === 'ai' && !message.isError && message.id !== thinkingMessageId && (isPersian(message.text) ? 'rtl-text' : 'ltr-text'))}>
-                        {/* Thinking Steps */}
+                    {/* Conditional Styling for Thinking Message */}
+                     <div className={cn(
+                         'max-w-[75%] rounded-lg shadow-sm relative group p-3', // Common styles
+                         message.sender === 'user' ? 'bg-primary text-primary-foreground ltr-text' :
+                         message.isError ? 'bg-destructive/10 border border-destructive/30 text-destructive ltr-text' :
+                         message.id === thinkingMessageId ? 'bg-muted/30 border border-dashed border-accent text-muted-foreground' : // Specific style for thinking
+                         'bg-secondary text-secondary-foreground', // Default AI message style
+                         message.sender === 'ai' && !message.isError && message.id !== thinkingMessageId && (isPersian(message.text) ? 'rtl-text' : 'ltr-text') // Directionality for final AI message
+                      )}>
+                         {/* Thinking Indicator */}
                          {message.id === thinkingMessageId && (
-                             <div className="p-3 space-y-2">
-                                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                                     <Loader2 className="h-4 w-4 animate-spin" /> Thinking...
-                                 </div>
-                                {message.thinkingSteps && message.thinkingSteps.length > 0 && (
-                                    <div className="text-xs text-muted-foreground/80 space-y-1 max-h-24 overflow-y-auto border-t border-dashed border-accent pt-2 mt-2">
-                                         {message.thinkingSteps.map((step, index) => (<p key={index}>{step}</p>))}
-                                    </div>
-                                )}
+                             <div className="flex items-center gap-2 text-sm">
+                                 <Loader2 className="h-4 w-4 animate-spin" /> Thinking...
                             </div>
                          )}
 
@@ -1224,7 +1209,6 @@ export default function ChatInterface() {
                      {message.sender === 'user' && (<Avatar className="h-8 w-8 border shrink-0"><AvatarFallback><User size={16} /></AvatarFallback></Avatar>)}
                   </div>
                 ))}
-                 {/* Remove explicit sending skeleton, handled by thinking message */}
               </div>
             </ScrollArea>
           </TabsContent>
