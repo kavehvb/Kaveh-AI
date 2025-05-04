@@ -1,6 +1,7 @@
 
 
 
+
 'use client';
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
@@ -998,11 +999,15 @@ export default function ChatInterface() {
     } catch (err) {
       console.error("Error calling AI:", err);
       const errorMessage = err instanceof Error ? err.message : "Unknown error.";
-      setError(`Failed to get response: ${errorMessage}`);
+      // Improve error message shown to user for server errors
+      const displayErrorMessage = errorMessage.includes("Server-side error")
+        ? "An unexpected error occurred on the server. Please check logs or try again later."
+        : `Failed to get response: ${errorMessage}`;
+      setError(displayErrorMessage);
       const errorTimestamp = Date.now();
       const errorAiMessage: Message = {
            id: generateMessageId(), // Use a NEW ID for the error message
-           sender: 'ai', text: `Error: ${errorMessage}`, cost: 0,
+           sender: 'ai', text: `Error: ${errorMessage}`, cost: 0, // Keep detailed error here
            timestamp: errorTimestamp, modelId: selectedModel.id, isError: true
       };
 
@@ -1023,7 +1028,7 @@ export default function ChatInterface() {
            saveToLocalStorage(CHAT_SESSIONS_STORAGE_KEY, updatedSessions);
            return updatedSessions;
        });
-       toast({ variant: "destructive", title: "AI Error", description: errorMessage });
+       toast({ variant: "destructive", title: "AI Error", description: displayErrorMessage }); // Show user-friendly error
     } finally {
       setIsSending(false);
       setThinkingMessageId(null); // Clear thinking message ID regardless of success/error
@@ -1168,17 +1173,29 @@ export default function ChatInterface() {
                     {message.sender === 'ai' && (<Avatar className="h-8 w-8 border shrink-0"><AvatarFallback><Bot size={16} /></AvatarFallback></Avatar>)}
                     {/* Conditional Styling for Thinking Message */}
                      <div className={cn(
-                         'max-w-[75%] rounded-lg shadow-sm relative group p-3', // Common styles
-                         message.sender === 'user' ? 'bg-primary text-primary-foreground ltr-text' :
-                         message.isError ? 'bg-destructive/10 border border-destructive/30 text-destructive ltr-text' :
-                         message.id === thinkingMessageId ? 'bg-muted/30 border border-dashed border-accent text-muted-foreground' : // Specific style for thinking
-                         'bg-secondary text-secondary-foreground', // Default AI message style
+                         'max-w-[75%] rounded-lg shadow-sm relative group', // Common styles
+                         message.sender === 'user' ? 'bg-primary text-primary-foreground ltr-text p-3' :
+                         message.isError ? 'bg-destructive/10 border border-destructive/30 text-destructive ltr-text p-3' :
+                         message.id === thinkingMessageId ? 'bg-muted/30 border border-dashed border-accent p-0' : // Specific style for thinking
+                         'bg-secondary text-secondary-foreground p-3', // Default AI message style
                          message.sender === 'ai' && !message.isError && message.id !== thinkingMessageId && (isPersian(message.text) ? 'rtl-text' : 'ltr-text') // Directionality for final AI message
                       )}>
-                         {/* Thinking Indicator */}
+                          {/* Thinking Indicator and Steps */}
                          {message.id === thinkingMessageId && (
-                             <div className="flex items-center gap-2 text-sm">
-                                 <Loader2 className="h-4 w-4 animate-spin" /> Thinking...
+                            <div className="p-3"> {/* Padding for thinking block */}
+                                 <div className="flex items-center gap-2 text-sm text-muted-foreground mb-2">
+                                     <Loader2 className="h-4 w-4 animate-spin" /> Thinking...
+                                 </div>
+                                {/* Display Thinking Steps (Optional) */}
+                                {message.thinkingSteps && message.thinkingSteps.length > 0 && (
+                                     <ScrollArea className="max-h-32 pr-2">
+                                         <ul className="text-xs text-muted-foreground/80 space-y-1 list-disc list-inside">
+                                             {message.thinkingSteps.map((step, index) => (
+                                                  <li key={index} className="whitespace-pre-wrap">{step}</li>
+                                             ))}
+                                         </ul>
+                                      </ScrollArea>
+                                 )}
                             </div>
                          )}
 
@@ -1605,3 +1622,4 @@ export default function ChatInterface() {
     </Card>
   );
 }
+
